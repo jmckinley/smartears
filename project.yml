@@ -54,6 +54,9 @@ targets:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # App uses only standard HTTPS encryption (exempt) -> skips the
+        # export-compliance prompt on every TestFlight upload.
+        ITSAppUsesNonExemptEncryption: false
         # --- Usage descriptions (required for permissions) ---
         NSMicrophoneUsageDescription: "SmartEars listens for your wake word and your spoken requests."
         NSSpeechRecognitionUsageDescription: "SmartEars converts your speech to text to understand your requests."
