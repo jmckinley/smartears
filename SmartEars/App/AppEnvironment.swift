@@ -20,8 +20,12 @@ import SwiftUI
 @MainActor
 public final class AppEnvironment: ObservableObject {
 
-    // Resolved configuration (credentials are absent in dev -> mocks used).
+    // Resolved configuration. Credentials resolve from (in priority order) the
+    // Keychain (keys the user pasted in Settings) then Info.plist placeholders.
     public let config: AppConfig
+
+    /// Secure persistence for user-entered API keys (real Keychain by default).
+    public let credentialStore: any CredentialStoring
 
     // MARK: Service protocol surface (defaults to stubs/mocks)
     public let llm: any LLMService
@@ -101,7 +105,8 @@ public final class AppEnvironment: ObservableObject {
     /// Designated initializer. All dependencies default to stub/mock impls so a
     /// no-argument construction yields a fully runnable, secret-free app.
     public init(
-        config: AppConfig = .load(),
+        config: AppConfig? = nil,
+        credentialStore: (any CredentialStoring)? = nil,
         llm: (any LLMService)? = nil,
         weather: (any WeatherService)? = nil,
         stocks: (any StockService)? = nil,
@@ -117,7 +122,25 @@ public final class AppEnvironment: ObservableObject {
         chime: (any ChimeService)? = nil,
         toolRouter: (any ToolRouting)? = nil
     ) {
-        self.config = config
+        // Resolve the credential store first, then merge any Keychain-stored keys
+        // over the Info.plist-derived config so persisted user keys win.
+        let store = credentialStore ?? KeychainCredentialStore()
+        self.credentialStore = store
+        let base = config ?? .load()
+        self.config = AppConfig(
+            llmAPIKey: store.value(for: "SE_LLM_API_KEY") ?? base.llmAPIKey,
+            weatherAPIKey: store.value(for: "SE_WEATHER_API_KEY") ?? base.weatherAPIKey,
+            stocksAPIKey: store.value(for: "SE_STOCKS_API_KEY") ?? base.stocksAPIKey,
+            newsAPIKey: store.value(for: "SE_NEWS_API_KEY") ?? base.newsAPIKey,
+            gmailClientID: store.value(for: "SE_GMAIL_CLIENT_ID") ?? base.gmailClientID
+        )
+        // Surface which slots already hold a key so Settings shows "Configured"
+        // across launches.
+        self.pendingCredentials = Dictionary(
+            uniqueKeysWithValues: CredentialSlot.allCases
+                .filter { store.value(for: $0.infoPlistKey) != nil }
+                .map { ($0, true) }
+        )
         self.llm = llm ?? StubLLMService()
         self.weather = weather ?? StubWeatherService()
         self.stocks = stocks ?? StubStockService()
@@ -142,23 +165,13 @@ public final class AppEnvironment: ObservableObject {
 
     /// Convenience flag for the UI: are we running entirely on mock services?
     public var isUsingMockServices: Bool {
-        !(config.hasCredential(config.llmAPIKey)
-          || config.hasCredential(config.weatherAPIKey)
-          || config.hasCredential(config.stocksAPIKey)
-          || config.hasCredential(config.newsAPIKey)
-          || config.hasCredential(config.gmailClientID))
+        !CredentialSlot.allCases.contains { hasCredential(for: $0) }
     }
 
-    /// Stores an API key the user pasted in Settings.
-    ///
-    /// SECURITY: This is a PLACEHOLDER. A real build MUST persist credentials to
-    /// the iOS Keychain (Keychain Services / `kSecClassGenericPassword`) — NEVER
-    /// in source, UserDefaults, or this in-memory map. No secret is ever written
-    /// to disk here; we only retain it for the current process so a real service
-    /// could be swapped in via `ServiceFactory`.
-    /// TODO: Replace with a Keychain-backed `CredentialStore` (Keychain Services).
+    /// Tracks which credential slots currently hold a key, so SwiftUI re-renders
+    /// Settings when the user saves/clears one. The values themselves live only in
+    /// the Keychain (`credentialStore`) — never in this map.
     @Published public private(set) var pendingCredentials: [CredentialSlot: Bool] = [:]
-    private var inMemoryCredentials: [CredentialSlot: String] = [:]
 
     public enum CredentialSlot: String, CaseIterable, Identifiable, Sendable {
         case llm, weather, stocks, news, gmail
@@ -185,32 +198,38 @@ public final class AppEnvironment: ObservableObject {
     }
 
     /// Returns whether a credential slot currently has a value resolved
-    /// (from config at launch, or pasted this session).
+    /// (from the Keychain, or an Info.plist placeholder at launch).
     public func hasCredential(for slot: CredentialSlot) -> Bool {
-        if pendingCredentials[slot] == true { return true }
+        credential(for: slot) != nil
+    }
+
+    /// Returns the resolved secret for a slot (Keychain first, then the launch
+    /// config). Services/`ServiceFactory` read keys through this accessor.
+    public func credential(for slot: CredentialSlot) -> String? {
+        if let stored = credentialStore.value(for: slot.infoPlistKey) { return stored }
         switch slot {
-        case .llm: return config.hasCredential(config.llmAPIKey)
-        case .weather: return config.hasCredential(config.weatherAPIKey)
-        case .stocks: return config.hasCredential(config.stocksAPIKey)
-        case .news: return config.hasCredential(config.newsAPIKey)
-        case .gmail: return config.hasCredential(config.gmailClientID)
+        case .llm: return config.llmAPIKey
+        case .weather: return config.weatherAPIKey
+        case .stocks: return config.stocksAPIKey
+        case .news: return config.newsAPIKey
+        case .gmail: return config.gmailClientID
         }
     }
 
-    /// Saves a pasted credential (placeholder; see SECURITY note above).
+    /// Securely persists an API key the user pasted in Settings to the Keychain.
     public func saveCredential(_ value: String, for slot: CredentialSlot) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        // TODO: write `trimmed` to the Keychain under `slot.infoPlistKey`.
-        inMemoryCredentials[slot] = trimmed
-        pendingCredentials[slot] = true
+        if credentialStore.set(trimmed, for: slot.infoPlistKey) {
+            pendingCredentials[slot] = true   // @Published -> Settings re-renders
+        }
     }
 
-    /// Clears a pasted credential from the in-memory placeholder store.
+    /// Removes a stored credential from the Keychain.
     public func clearCredential(for slot: CredentialSlot) {
-        // TODO: delete the Keychain item for `slot.infoPlistKey`.
-        inMemoryCredentials[slot] = nil
-        pendingCredentials[slot] = nil
+        if credentialStore.delete(for: slot.infoPlistKey) {
+            pendingCredentials[slot] = false
+        }
     }
 }
 

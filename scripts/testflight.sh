@@ -21,6 +21,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Auto-load App Store Connect API credentials if present (gitignored).
+# Copy Config/asc.env.example -> Config/asc.env and fill in your IDs.
+if [[ -f "Config/asc.env" ]]; then
+  # shellcheck disable=SC1091
+  source "Config/asc.env"
+fi
+
 SCHEME="SmartEars"
 PROJECT="SmartEars.xcodeproj"
 ARCHIVE_PATH="build/SmartEars.xcarchive"

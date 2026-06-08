@@ -23,3 +23,6 @@ GoogleService-Info.plist
 *.p8
 AuthKey_*
 build/export/
+
+# App Store Connect API config (local only)
+Config/asc.env
