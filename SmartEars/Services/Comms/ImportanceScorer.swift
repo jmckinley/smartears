@@ -135,11 +135,38 @@ public struct ImportanceScorer: Sendable {
     }
 
     private func isVIP(_ sender: String) -> Bool {
+        // Match a VIP entry against the sender using the entry's shape, so we
+        // avoid the false positives of a naive bidirectional `contains`
+        // (e.g. VIP "john" must NOT match "johnson@example.com"):
+        //   • "name@host.com"  → exact email match
+        //   • "host.com"       → sender's email domain match (incl. subdomains)
+        //   • "john" / "Jane"  → whole-token match against the sender's words
         let lowered = sender.lowercased()
+        let email = Self.extractEmail(from: lowered)
+        let domain = email?.split(separator: "@").last.map(String.init)
+        let tokens = Set(lowered.split { !$0.isLetter && !$0.isNumber }.map(String.init))
+
         return config.vipSenders.contains { vip in
-            let v = vip.lowercased()
-            return !v.isEmpty && (lowered.contains(v) || v.contains(lowered))
+            let v = vip.lowercased().trimmingCharacters(in: .whitespaces)
+            guard !v.isEmpty else { return false }
+            if v.contains("@") {                       // full email → exact match
+                return email == v
+            }
+            if v.contains(".") {                       // domain → domain/subdomain match
+                guard let domain else { return false }
+                return domain == v || domain.hasSuffix("." + v)
+            }
+            return tokens.contains(v) || email == v    // bare name → whole-token match
         }
+    }
+
+    /// Extracts the first email-looking token from a raw sender string such as
+    /// `"Jane Doe <jane@example.com>"`, returning `jane@example.com` (or nil).
+    private static func extractEmail(from sender: String) -> String? {
+        sender
+            .split { " <>,;\"".contains($0) }
+            .map(String.init)
+            .first { $0.contains("@") }
     }
 
     /// Returns a 0...1 structural-urgency hint (capped before weighting).

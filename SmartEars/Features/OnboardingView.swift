@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import AVFoundation
 import Speech
 import UserNotifications
@@ -20,13 +21,22 @@ struct OnboardingView: View {
     @EnvironmentObject private var env: AppEnvironment
     @Environment(\.dismiss) private var dismiss
 
+    /// Tri-state authorization so we can tell "not asked yet" from "denied"
+    /// and route the user to Settings in the latter case (iOS only presents
+    /// the system prompt once).
+    enum PermState { case notDetermined, granted, denied }
+
     @State private var page = 0
     @State private var wakePhrase = "Hey SmartEars"
-    @State private var micGranted = false
-    @State private var speechGranted = false
-    @State private var notificationsGranted = false
+    @State private var micState: PermState = .notDetermined
+    @State private var speechState: PermState = .notDetermined
+    @State private var notificationsState: PermState = .notDetermined
 
     private let suggestions = ["Hey SmartEars", "Hey Ears", "Okay Ears", "Listen Up"]
+
+    /// Microphone + speech are essential to the voice pipeline; notifications
+    /// are optional (only smart-alerting needs them).
+    private var essentialGranted: Bool { micState == .granted && speechState == .granted }
 
     var body: some View {
         ZStack {
@@ -79,25 +89,40 @@ struct OnboardingView: View {
                     symbol: "mic.fill",
                     title: "Microphone",
                     detail: "Hear your voice for hands-free questions.",
-                    granted: micGranted,
-                    action: requestMic
+                    required: true,
+                    state: micState,
+                    action: requestMic,
+                    openSettings: openSettings
                 )
                 PermissionRow(
                     symbol: "waveform.and.mic",
                     title: "Speech Recognition",
                     detail: "Turn your speech into text on-device.",
-                    granted: speechGranted,
-                    action: requestSpeech
+                    required: true,
+                    state: speechState,
+                    action: requestSpeech,
+                    openSettings: openSettings
                 )
                 PermissionRow(
                     symbol: "bell.fill",
                     title: "Notifications",
-                    detail: "Surface important messages and emails as alerts.",
-                    granted: notificationsGranted,
-                    action: requestNotifications
+                    detail: "Surface important messages and emails as alerts. (Optional)",
+                    required: false,
+                    state: notificationsState,
+                    action: requestNotifications,
+                    openSettings: openSettings
                 )
+
+                if !essentialGranted {
+                    Text("Microphone and Speech Recognition are required for hands-free use. Grant them above to continue.")
+                        .font(SETheme.Typography.caption)
+                        .foregroundStyle(SETheme.Colors.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, SETheme.Spacing.small)
+                }
             }
             .padding(.top, SETheme.Spacing.large)
+            .onAppear(perform: syncPermissionStates)
         }
     }
 
@@ -134,20 +159,25 @@ struct OnboardingView: View {
 
     // MARK: Footer (advance / finish)
 
+    /// The permissions page (1) blocks until the essential permissions are granted.
+    private var canAdvance: Bool { page != 1 || essentialGranted }
+
     private var footer: some View {
         Button(action: advance) {
             Text(page == 2 ? "Start using SmartEars" : "Continue")
                 .font(SETheme.Typography.button)
                 .frame(maxWidth: .infinity)
                 .padding()
-                .background(SETheme.Colors.accent)
-                .foregroundStyle(.white)
+                .background(canAdvance ? SETheme.Colors.accent : SETheme.Colors.surface)
+                .foregroundStyle(canAdvance ? .white : SETheme.Colors.textSecondary)
                 .clipShape(RoundedRectangle(cornerRadius: SETheme.Radius.card, style: .continuous))
         }
+        .disabled(!canAdvance)
         .padding(SETheme.Spacing.large)
     }
 
     private func advance() {
+        guard canAdvance else { return }
         if page < 2 {
             withAnimation { page += 1 }
         } else {
@@ -166,21 +196,50 @@ struct OnboardingView: View {
 
     private func requestMic() {
         AVAudioApplication.requestRecordPermission { granted in
-            Task { @MainActor in micGranted = granted }
+            Task { @MainActor in micState = granted ? .granted : .denied }
         }
     }
 
     private func requestSpeech() {
         SFSpeechRecognizer.requestAuthorization { status in
-            Task { @MainActor in speechGranted = (status == .authorized) }
+            Task { @MainActor in speechState = (status == .authorized) ? .granted : .denied }
         }
     }
 
     private func requestNotifications() {
         UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
-                Task { @MainActor in notificationsGranted = granted }
+                Task { @MainActor in notificationsState = granted ? .granted : .denied }
             }
+    }
+
+    /// Reflects the system's current authorization status (e.g. after the user
+    /// returns from Settings) so the UI and the gate stay in sync.
+    private func syncPermissionStates() {
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted: micState = .granted
+        case .denied: micState = .denied
+        default: micState = .notDetermined
+        }
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized: speechState = .granted
+        case .denied, .restricted: speechState = .denied
+        default: speechState = .notDetermined
+        }
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            Task { @MainActor in
+                switch settings.authorizationStatus {
+                case .authorized, .provisional, .ephemeral: notificationsState = .granted
+                case .denied: notificationsState = .denied
+                default: notificationsState = .notDetermined
+                }
+            }
+        }
+    }
+
+    private func openSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
     }
 }
 
@@ -235,8 +294,10 @@ private struct PermissionRow: View {
     let symbol: String
     let title: String
     let detail: String
-    let granted: Bool
+    let required: Bool
+    let state: OnboardingView.PermState
     let action: () -> Void
+    let openSettings: () -> Void
 
     var body: some View {
         HStack(spacing: SETheme.Spacing.medium) {
@@ -253,19 +314,34 @@ private struct PermissionRow: View {
                     .foregroundStyle(SETheme.Colors.textSecondary)
             }
             Spacer()
-            if granted {
+            switch state {
+            case .granted:
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(SETheme.Colors.success)
-            } else {
+            case .notDetermined:
                 Button("Allow", action: action)
                     .font(SETheme.Typography.caption)
                     .buttonStyle(.borderedProminent)
                     .tint(SETheme.Colors.accent)
+            case .denied:
+                // iOS won't re-prompt once denied — send the user to Settings.
+                Button("Settings", action: openSettings)
+                    .font(SETheme.Typography.caption)
+                    .buttonStyle(.bordered)
+                    .tint(required ? SETheme.Colors.warning : SETheme.Colors.accent)
             }
         }
         .seCard()
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title). \(detail). \(granted ? "Granted" : "Not granted")")
+        .accessibilityLabel("\(title). \(detail). \(accessibilityStatus)")
+    }
+
+    private var accessibilityStatus: String {
+        switch state {
+        case .granted: return "Granted"
+        case .denied: return required ? "Denied. Required. Open Settings to enable." : "Denied"
+        case .notDetermined: return "Not granted"
+        }
     }
 }
 
