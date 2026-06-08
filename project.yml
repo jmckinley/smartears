@@ -38,7 +38,10 @@ targets:
         INFOPLIST_FILE: SmartEars/Info/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SUPPORTS_MACCATALYST: NO
-        TARGETED_DEVICE_FAMILY: "1,2"
+        # iPhone-only: SmartEars is an AirPods audio companion. (Targeting iPad
+        # would require declaring all interface orientations for App Store
+        # validation; portrait-only is fine for iPhone.)
+        TARGETED_DEVICE_FAMILY: "1"
         SWIFT_EMIT_LOC_STRINGS: YES
         # NOTE: API keys are injected via a gitignored Config/Secrets.xcconfig
         # referenced by Info.plist placeholder keys ($(SE_LLM_API_KEY) etc.).
