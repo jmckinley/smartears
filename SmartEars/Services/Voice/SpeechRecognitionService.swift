@@ -103,6 +103,14 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
 
+    /// Timestamp of the most recent partial result, used for silence endpointing.
+    /// Lives in actor state so it is only read/written on the actor executor
+    /// (the recognition callback hops onto the actor before touching it).
+    private var lastUpdate = Date()
+    /// Whether a recognition session is currently active. Guards against the
+    /// continuation being finished or torn down more than once.
+    private var sessionActive = false
+
     public init(
         locale: Locale = Locale(identifier: "en-US"),
         tuning: SpeechRecognitionTuning = .default
@@ -136,13 +144,20 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
             return
         }
 
+        // Defensive reset: if a prior utterance's engine/tap/request wasn't fully
+        // cleaned up (e.g. a second transcribe() arrives before the first stream
+        // terminated), tear it down before reusing the shared AVAudioEngine.
+        // Reusing a still-running engine makes prepare()/start() throw.
+        teardown()
+        sessionActive = true
+
         // Configure the shared audio session for measurement-quality capture.
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
-            continuation.finish(throwing: SmartEarsError.other("Audio session setup failed: \(error.localizedDescription)"))
+            finish(continuation: continuation, error: SmartEarsError.other("Audio session setup failed: \(error.localizedDescription)"))
             return
         }
 
@@ -156,27 +171,28 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
         // Endpointing + cap timers, driven off the main session clock.
         let silenceCap = tuning.endpointSilenceSeconds
         let hardCap = tuning.maxUtteranceSeconds
-        var lastUpdate = Date()
+        self.lastUpdate = Date()
         let startedAt = Date()
 
+        // The recognitionTask callback fires on SFSpeechRecognizer's internal
+        // background queue. AsyncThrowingStream.Continuation is NOT thread-safe,
+        // so we MUST NOT yield/finish from that background thread while the
+        // consumer iterates on another executor. Hop onto the actor first so all
+        // continuation access (and the lastUpdate/teardown state) is serialized
+        // on the actor's executor.
         self.task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
-            if let result {
-                let best = result.bestTranscription.formattedString
-                let segmentConfidence = result.bestTranscription.segments.last?.confidence ?? 1.0
-                lastUpdate = Date()
-                continuation.yield(
-                    Transcription(text: best, isFinal: result.isFinal, confidence: segmentConfidence)
+            // Snapshot the Sendable values we need; SFSpeechRecognitionResult is
+            // not Sendable, so extract before hopping to the actor.
+            let payload: Transcription? = result.map {
+                Transcription(
+                    text: $0.bestTranscription.formattedString,
+                    isFinal: $0.isFinal,
+                    confidence: $0.bestTranscription.segments.last?.confidence ?? 1.0
                 )
-                if result.isFinal {
-                    continuation.finish()
-                    Task { await self.teardown() }
-                }
             }
-            if let error {
-                continuation.finish(throwing: SmartEarsError.other("Recognition error: \(error.localizedDescription)"))
-                Task { await self.teardown() }
-            }
+            let errorMessage = error?.localizedDescription
+            Task { await self.handleRecognition(payload: payload, errorMessage: errorMessage, continuation: continuation) }
         }
 
         // Install the input tap and start the engine.
@@ -189,8 +205,7 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
         do {
             try audioEngine.start()
         } catch {
-            continuation.finish(throwing: SmartEarsError.other("Audio engine failed to start: \(error.localizedDescription)"))
-            teardown()
+            finish(continuation: continuation, error: SmartEarsError.other("Audio engine failed to start: \(error.localizedDescription)"))
             return
         }
 
@@ -200,19 +215,57 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
                 try? await Task.sleep(nanoseconds: 250_000_000) // 0.25s poll
                 guard let self, await self.isRunning else { return }
                 let now = Date()
-                if now.timeIntervalSince(lastUpdate) >= silenceCap || now.timeIntervalSince(startedAt) >= hardCap {
-                    continuation.finish()
-                    await self.teardown()
+                let last = await self.lastUpdate
+                if now.timeIntervalSince(last) >= silenceCap || now.timeIntervalSince(startedAt) >= hardCap {
+                    await self.finish(continuation: continuation, error: nil)
                     return
                 }
             }
         }
     }
 
+    /// Actor-isolated handler for SFSpeechRecognizer callbacks. Running on the
+    /// actor executor serializes all continuation access (the continuation is not
+    /// thread-safe) and keeps `lastUpdate`/teardown state race-free.
+    private func handleRecognition(
+        payload: Transcription?,
+        errorMessage: String?,
+        continuation: AsyncThrowingStream<Transcription, Error>.Continuation
+    ) {
+        guard sessionActive else { return }
+        if let payload {
+            lastUpdate = Date()
+            continuation.yield(payload)
+            if payload.isFinal {
+                finish(continuation: continuation, error: nil)
+            }
+        }
+        if let errorMessage {
+            finish(continuation: continuation, error: SmartEarsError.other("Recognition error: \(errorMessage)"))
+        }
+    }
+
+    /// Finishes the stream and tears down exactly once, regardless of which path
+    /// (final result, error, silence, or cap) triggered completion.
+    private func finish(
+        continuation: AsyncThrowingStream<Transcription, Error>.Continuation,
+        error: Error?
+    ) {
+        guard sessionActive else { return }
+        if let error {
+            continuation.finish(throwing: error)
+        } else {
+            continuation.finish()
+        }
+        teardown()
+    }
+
     private var isRunning: Bool { audioEngine.isRunning }
 
-    /// Tears down the engine/tap/request for the current utterance.
+    /// Tears down the engine/tap/request for the current utterance. Idempotent:
+    /// safe to call before starting a new utterance and on every completion path.
     private func teardown() {
+        sessionActive = false
         if audioEngine.isRunning {
             audioEngine.stop()
         }

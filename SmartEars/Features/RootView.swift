@@ -33,7 +33,7 @@ struct RootView: View {
                     statusLabel
 
                     ListeningOrb(state: env.voiceState, isBusy: isProcessing) {
-                        simulateVoiceTurn()
+                        startVoiceTurn()
                     }
                     .frame(height: 220)
 
@@ -218,35 +218,71 @@ struct RootView: View {
         env.alerts.first.map { "New \($0.category.rawValue): \($0.title)" } ?? "Alerts"
     }
 
-    // MARK: Voice turn (simulated)
+    // MARK: Voice turn (real capture)
 
-    /// Runs one mock voice turn end-to-end so the pipeline is exercisable in the
-    /// simulator without audio hardware. A real build drives this from the
-    /// VoiceSessionCoordinator (wake -> STT -> intent -> route -> TTS).
-    private func simulateVoiceTurn() {
+    /// Runs one REAL voice turn end-to-end: chime -> live speech capture (STT) ->
+    /// intent classification -> tool routing -> spoken response. Drives the same
+    /// `VoiceSessionState` machine the UI reflects. Resilient throughout: a
+    /// transcription failure (e.g. denied permission) settles back to idle with a
+    /// spoken explanation, and an empty transcript falls back to "I didn't catch
+    /// that." rather than crashing.
+    private func startVoiceTurn() {
         guard !isProcessing else { return }
         isProcessing = true
-        let utterance = "what's the weather"
 
         Task { @MainActor in
-            // listening
+            // listening: chime, then consume the live transcription stream.
             env.voiceState = .listening
+            env.liveTranscript = ""
             await env.chime.playWakeChime()
-            env.liveTranscript = utterance
 
-            // thinking
+            var finalText = ""
+            do {
+                for try await transcription in env.speechRecognizer.transcribe() {
+                    env.liveTranscript = transcription.text
+                    if !transcription.text.isEmpty { finalText = transcription.text }
+                }
+            } catch {
+                // Surface the failure (commonly a permission error) and bail out.
+                let detail = (error as? SmartEarsError)?.errorDescription
+                    ?? error.localizedDescription
+                let response = AssistantResponse(
+                    spokenText: detail,
+                    displayCard: DisplayCard(kind: .system, title: "Couldn't listen", body: detail)
+                )
+                env.lastResponse = response
+                await env.speechSynthesizer.speak(response.spokenText)
+                env.voiceState = .idle
+                env.liveTranscript = ""
+                isProcessing = false
+                return
+            }
+
+            // Never crash on an empty transcript — speak a graceful fallback.
+            let heard = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !heard.isEmpty else {
+                let response = AssistantResponse(spokenText: "I didn't catch that.")
+                env.lastResponse = response
+                await env.speechSynthesizer.speak(response.spokenText)
+                env.voiceState = .idle
+                env.liveTranscript = ""
+                isProcessing = false
+                return
+            }
+
+            // thinking: classify the intent (LLM fallback) and route it.
             env.voiceState = .thinking
-            let intent = (try? await env.llm.classifyIntent(transcript: utterance))
-                ?? .conversational(prompt: utterance)
+            let intent = (try? await env.llm.classifyIntent(transcript: heard))
+                ?? .conversational(prompt: heard)
             let response = await env.toolRouter.route(intent)
 
-            // speaking
+            // speaking: surface + speak the response.
             env.voiceState = .speaking
             env.history.insert(response, at: 0)
             env.lastResponse = response
             await env.speechSynthesizer.speak(response.spokenText)
 
-            // settle
+            // settle: hold the mic open briefly when a follow-up is expected.
             env.voiceState = response.followUpExpected ? .awaitingFollowUp : .idle
             env.liveTranscript = ""
             isProcessing = false

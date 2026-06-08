@@ -141,26 +141,92 @@ public final class AppEnvironment: ObservableObject {
                 .filter { store.value(for: $0.infoPlistKey) != nil }
                 .map { ($0, true) }
         )
-        self.llm = llm ?? StubLLMService()
-        self.weather = weather ?? StubWeatherService()
-        self.stocks = stocks ?? StubStockService()
-        self.news = news ?? StubNewsService()
-        self.messageCompose = messageCompose ?? StubMessageComposeService()
-        self.messageInbox = messageInbox ?? StubMessageInboxService()
-        self.email = email ?? StubEmailService()
-        self.contacts = contacts ?? StubContactResolver()
-        self.speechRecognizer = speechRecognizer ?? StubSpeechRecognizer()
-        self.speechSynthesizer = speechSynthesizer ?? StubSpeechSynthesizer()
-        self.wakeWord = wakeWord ?? StubWakeWordEngine()
-        self.gestures = gestures ?? StubGestureService()
-        self.chime = chime ?? StubChimeService()
-        // The default router depends on the resolved info/comms services above.
-        self.toolRouter = toolRouter ?? StubToolRouter(
-            weather: self.weather,
-            stocks: self.stocks,
-            news: self.news,
-            llm: self.llm
+        // Build the real services. Each can still be overridden via the matching
+        // initializer parameter (for tests/previews) using the `?? realImpl`
+        // pattern. No secrets are hardcoded: keys are resolved from `self.config`
+        // (Keychain + Info.plist) and Gmail's token from the credential store.
+
+        // One shared on-device recognizer powers both live transcription and the
+        // wake-word detector (it phrase-matches over the same recognition stream).
+        let recognizer: any SpeechRecognizing = speechRecognizer ?? LiveSpeechRecognitionService()
+        self.speechRecognizer = recognizer
+
+        // Compose presenter + real system messaging service. The presenter shows
+        // the native MessageUI compose sheets from the key window's top view
+        // controller; the service's `present` closure hops to the main actor to
+        // drive it. The SAME instance backs both compose and inbox surfaces.
+        let presenter = ComposePresenter()
+        let messaging = AppEnvironment.makeMessagingService(presenter: presenter)
+        let realCompose: any MessageComposeService = messageCompose ?? messaging
+        let realInbox: any MessageInboxService = messageInbox ?? messaging
+        self.messageCompose = realCompose
+        self.messageInbox = realInbox
+
+        let realLLM = llm ?? RemoteLLMClient(keyProvider: APIKeyProvider(configKey: self.config.llmAPIKey))
+        self.llm = realLLM
+
+        let realWeather = weather ?? Self.makeWeatherService()
+        self.weather = realWeather
+
+        let realStocks = stocks ?? RemoteStockService(apiKey: self.config.stocksAPIKey ?? "")
+        self.stocks = realStocks
+
+        let realNews = news ?? RemoteNewsService(apiKey: self.config.newsAPIKey ?? "")
+        self.news = realNews
+
+        let realEmail = email ?? GmailService(tokenProvider: { store.value(for: "SE_GMAIL_TOKEN") })
+        self.email = realEmail
+
+        let realContacts = contacts ?? LiveContactResolver()
+        self.contacts = realContacts
+
+        self.speechSynthesizer = speechSynthesizer ?? LiveTextToSpeechService()
+        self.wakeWord = wakeWord ?? WakeWordDetector(
+            recognizer: recognizer,
+            triggerPhrase: AppEnvironment.defaultWakePhrase
         )
+        self.gestures = gestures ?? AirPodInputService()
+        self.chime = chime ?? LiveChimeService()
+
+        // The default router depends on the resolved info/comms services above.
+        self.toolRouter = toolRouter ?? AssistantToolRouter(
+            llm: realLLM,
+            weather: realWeather,
+            stocks: realStocks,
+            news: realNews,
+            messageCompose: realCompose,
+            messageInbox: realInbox,
+            email: realEmail,
+            contacts: realContacts
+        )
+    }
+
+    /// Builds the real `SystemMessagingService`, wiring its `present` closure to
+    /// the `ComposePresenter` on the main actor. Falls back to MessageUI's own
+    /// platform-compat behavior where MessageUI is unavailable.
+    @MainActor
+    private static func makeMessagingService(presenter: ComposePresenter) -> any MessagingService {
+        #if canImport(MessageUI)
+        return SystemMessagingService { recipients, body in
+            Task { @MainActor in presenter.presentMessage(recipients: recipients, body: body) }
+        }
+        #else
+        return SystemMessagingService()
+        #endif
+    }
+
+    /// Default wake phrase used to initialize the live wake-word detector.
+    static let defaultWakePhrase = "Hey SmartEars"
+
+    /// Builds the real weather service (WeatherKit on supported SDKs, with a live
+    /// CoreLocation provider). Falls back to the WeatherKit service's own throwing
+    /// behavior when location/entitlements are unavailable.
+    private static func makeWeatherService() -> any WeatherService {
+        #if canImport(WeatherKit)
+        return WeatherKitWeatherService(currentLocationProvider: LiveLocationProvider.current)
+        #else
+        return StubWeatherService()
+        #endif
     }
 
     /// Convenience flag for the UI: are we running entirely on mock services?
@@ -233,174 +299,3 @@ public final class AppEnvironment: ObservableObject {
     }
 }
 
-// MARK: - Stub / Mock Service Implementations
-//
-// These return realistic sample data so the app is fully runnable without keys.
-// Real network-backed implementations live in their respective Service modules
-// and are swapped in by a ServiceFactory when credentials resolve.
-
-struct StubLLMService: LLMService {
-    func complete(prompt: String, context: [String]) async throws -> String {
-        "Here's what I found about \"\(prompt)\". (Running on the bundled mock LLM — no API key configured.)"
-    }
-    func classifyIntent(transcript: String) async throws -> AssistantIntent {
-        let lower = transcript.lowercased()
-        if lower.contains("weather") { return .weather(location: nil) }
-        if lower.contains("news") { return .news(topic: nil) }
-        if lower.contains("stock") || lower.contains("price") { return .stock(symbol: "AAPL") }
-        return .conversational(prompt: transcript)
-    }
-}
-
-// NOTE: `StubWeatherService`, `StubStockService`, and `StubNewsService` are
-// defined in their respective Service files (Services/Info/*.swift) with richer
-// sample data. They are reused here rather than redeclared.
-
-struct StubMessageComposeService: MessageComposeService {
-    // Honest: SMS/iMessage are compose-only. The real impl presents
-    // MFMessageComposeViewController; the user must tap Send. We model that as
-    // `userActionRequired` so callers never assume an auto-send happened.
-    func compose(channel: MessageChannel, recipient: String?, body: String?) async throws {
-        throw SmartEarsError.userActionRequired(
-            "Opening the compose sheet for \(recipient ?? "your contact") — tap Send to deliver."
-        )
-    }
-}
-
-struct StubMessageInboxService: MessageInboxService {
-    func recentMessages(filter: AlertFilter) async throws -> [MessageSummary] {
-        [
-            MessageSummary(
-                channel: .sms, source: .simulated, senderName: "Mom",
-                preview: "Call me when you get a sec", importance: .high
-            ),
-            MessageSummary(
-                channel: .sms, source: .userNotification, senderName: "Alex",
-                preview: "Lunch at noon?", importance: .normal, isRead: true
-            )
-        ]
-    }
-}
-
-struct StubEmailService: EmailService {
-    func recentEmails(filter: AlertFilter) async throws -> [EmailSummary] {
-        [
-            EmailSummary(
-                source: .simulated, from: "Jordan Lee", fromAddress: "jordan@example.com",
-                subject: "Q3 planning doc", snippet: "Adding you to the review thread…",
-                importance: .high
-            )
-        ]
-    }
-    func sendEmail(recipient: String, subject: String, body: String) async throws {
-        // With Gmail creds the real impl sends via the API. Without creds, the
-        // app falls back to MFMailComposeViewController -> user taps Send.
-        throw SmartEarsError.userActionRequired(
-            "Opening the mail compose sheet to \(recipient) — tap Send to deliver."
-        )
-    }
-}
-
-struct StubContactResolver: ContactResolving {
-    func resolve(name: String) async throws -> ResolvedContact? {
-        ResolvedContact(displayName: name, phoneNumber: "+15555550123", emailAddress: nil)
-    }
-}
-
-struct StubSpeechRecognizer: SpeechRecognizing {
-    func transcribe() -> AsyncThrowingStream<Transcription, Error> {
-        AsyncThrowingStream { continuation in
-            continuation.yield(Transcription(text: "what's the weather", isFinal: false, confidence: 0.6))
-            continuation.yield(Transcription(text: "what's the weather", isFinal: true))
-            continuation.finish()
-        }
-    }
-}
-
-actor StubSpeechSynthesizer: SpeechSynthesizing {
-    // Real impl wraps AVSpeechSynthesizer; the stub is a no-op so previews/tests
-    // don't require audio hardware.
-    func speak(_ text: String) async { /* no-op stub */ }
-    func stop() async { /* no-op stub */ }
-}
-
-struct StubWakeWordEngine: WakeWordEngine {
-    func wakeEvents() -> AsyncStream<Date> {
-        // Stub never auto-fires; the real engine uses SFSpeechRecognizer phrase
-        // matching. Fully-custom on-device keyword spotting is limited on iOS.
-        AsyncStream { _ in }
-    }
-    func setWakePhrase(_ phrase: String) { /* no-op stub */ }
-}
-
-struct StubGestureService: GestureService {
-    func gestureEvents() -> AsyncStream<GestureEvent> {
-        // Real impl bridges MPRemoteCommandCenter / route changes /
-        // CMHeadphoneMotionManager. Stub emits nothing.
-        AsyncStream { _ in }
-    }
-}
-
-actor StubChimeService: ChimeService {
-    func playWakeChime() async { /* no-op stub */ }
-    func playAlertChime(importance: Importance) async { /* no-op stub */ }
-}
-
-/// A minimal router so the app produces real `AssistantResponse`s end-to-end on
-/// mocks. The full `ToolRouter` (Assistant module) handles every intent + builds
-/// `PendingConfirmation` for sends.
-struct StubToolRouter: ToolRouting {
-    let weather: any WeatherService
-    let stocks: any StockService
-    let news: any NewsService
-    let llm: any LLMService
-
-    func route(_ intent: AssistantIntent) async -> AssistantResponse {
-        do {
-            switch intent {
-            case .weather(let location):
-                let w = try await weather.currentWeather(location: location)
-                let text = "It's \(Int(w.temperatureF.rounded()))°F and \(w.conditionDescription) in \(w.locationName)."
-                return AssistantResponse(
-                    spokenText: text,
-                    displayCard: DisplayCard(kind: .weather, title: w.locationName, subtitle: text),
-                    followUpExpected: true
-                )
-            case .stock(let symbol):
-                let q = try await stocks.quote(symbol: symbol)
-                let dir = q.isUp ? "up" : "down"
-                let text = "\(q.symbol) is at $\(String(format: "%.2f", q.price)), \(dir) \(String(format: "%.2f", abs(q.changePercent)))%."
-                return AssistantResponse(
-                    spokenText: text,
-                    displayCard: DisplayCard(kind: .stock, title: q.symbol, subtitle: text)
-                )
-            case .news(let topic):
-                let items = try await news.headlines(topic: topic, limit: 3)
-                let text = "Top headlines: " + items.map(\.headline).joined(separator: "; ") + "."
-                return AssistantResponse(
-                    spokenText: text,
-                    displayCard: DisplayCard(kind: .news, title: "News", body: text)
-                )
-            case .conversational(let prompt), .unknown(let prompt):
-                let reply = try await llm.complete(prompt: prompt, context: [])
-                return AssistantResponse(
-                    spokenText: reply,
-                    displayCard: DisplayCard(kind: .conversation, title: "SmartEars", body: reply),
-                    followUpExpected: true
-                )
-            default:
-                return AssistantResponse(
-                    spokenText: "I can't do that yet on the mock build, but I heard you.",
-                    displayCard: DisplayCard(kind: .system, title: "Not yet supported")
-                )
-            }
-        } catch let error as SmartEarsError {
-            return AssistantResponse(
-                spokenText: error.localizedDescription,
-                displayCard: DisplayCard(kind: .system, title: "Action needed", body: error.localizedDescription)
-            )
-        } catch {
-            return AssistantResponse(spokenText: "Sorry, something went wrong.")
-        }
-    }
-}

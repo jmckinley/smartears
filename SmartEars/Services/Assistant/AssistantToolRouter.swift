@@ -444,7 +444,9 @@ public struct AssistantToolRouter: ToolRouting {
             }
             let spoken = messages.prefix(4).map { msg -> String in
                 let snippet = msg.preview ?? msg.body ?? "no preview available"
-                return "\(msg.senderName) says: \(snippet)"
+                let sender = Self.sanitizeUntrusted(msg.senderName)
+                let safeSnippet = Self.sanitizeUntrusted(snippet)
+                return "\(sender) says: \(safeSnippet)"
             }.joined(separator: ". ") + "."
             return AssistantResponse(
                 spokenText: spoken,
@@ -468,7 +470,9 @@ public struct AssistantToolRouter: ToolRouting {
                 return AssistantResponse(spokenText: "No new email to read right now.")
             }
             let spoken = emails.prefix(3).map { e -> String in
-                "From \(e.from): \(e.subject)."
+                let from = Self.sanitizeUntrusted(e.from)
+                let subject = Self.sanitizeUntrusted(e.subject)
+                return "From \(from): \(subject)."
             }.joined(separator: " ")
             return AssistantResponse(
                 spokenText: "Here's your email. " + spoken,
@@ -594,6 +598,40 @@ public struct AssistantToolRouter: ToolRouting {
     }
 
     // MARK: - Helpers
+
+    /// Neutralizes untrusted, remotely-controlled text (email/message senders,
+    /// subjects, bodies) before it is spoken and pushed into the LLM conversation
+    /// context. Without this, an attacker who controls an email subject or message
+    /// body could inject instruction-like text ("ignore previous instructions…")
+    /// that contaminates later turns. We strip control characters and defang the
+    /// most common injection directive phrasings while leaving the text readable.
+    private static func sanitizeUntrusted(_ raw: String) -> String {
+        // Drop newlines/control characters that could fake message boundaries.
+        var text = raw.components(separatedBy: .controlCharacters).joined(separator: " ")
+        // Collapse runs of whitespace introduced by the strip above.
+        text = text.split(whereSeparator: { $0 == " " || $0 == "\t" }).joined(separator: " ")
+        // Defang directive lead-ins so they read as inert content, not commands.
+        let injectionMarkers = [
+            "ignore previous instructions",
+            "ignore all previous instructions",
+            "disregard previous instructions",
+            "disregard all previous instructions",
+            "system prompt",
+            "you are now",
+            "new instructions:",
+            "</context>",
+            "<context>"
+        ]
+        for marker in injectionMarkers {
+            text = text.replacingOccurrences(
+                of: marker,
+                with: "(redacted)",
+                options: [.caseInsensitive]
+            )
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "(no readable content)" : trimmed
+    }
 
     private func errorResponse(_ friendly: String, _ error: Error) -> AssistantResponse {
         let detail = (error as? SmartEarsError)?.errorDescription ?? error.localizedDescription

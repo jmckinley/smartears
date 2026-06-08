@@ -51,15 +51,16 @@ public struct SpeechVoiceConfig: Sendable {
 /// The synthesizer and its delegate live on the main actor because
 /// `AVSpeechSynthesizer` posts delegate callbacks on the main queue and is not
 /// `Sendable`; the public API is async so callers can `await` completion.
-public final class LiveTextToSpeechService: NSObject, SpeechSynthesizing, @unchecked Sendable {
+@MainActor
+public final class LiveTextToSpeechService: NSObject, SpeechSynthesizing {
 
     private let synthesizer = AVSpeechSynthesizer()
     private let config: SpeechVoiceConfig
 
     /// Resumes the `speak` continuation when the current utterance finishes,
-    /// is cancelled (barge-in), or fails to start.
+    /// is cancelled (barge-in), or fails to start. Only touched on the main
+    /// actor, so no external lock is needed for safe single-resume.
     private var completion: CheckedContinuation<Void, Never>?
-    private let lock = NSLock()
 
     public init(config: SpeechVoiceConfig = .default) {
         self.config = config
@@ -76,9 +77,7 @@ public final class LiveTextToSpeechService: NSObject, SpeechSynthesizing, @unche
         guard !trimmed.isEmpty else { return }
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            lock.lock()
             self.completion = continuation
-            lock.unlock()
 
             let utterance = AVSpeechUtterance(string: trimmed)
             utterance.voice = AVSpeechSynthesisVoice(language: config.languageCode)
@@ -99,19 +98,21 @@ public final class LiveTextToSpeechService: NSObject, SpeechSynthesizing, @unche
         resumeCompletion()
     }
 
-    /// Resolve and clear the pending continuation exactly once.
+    /// Resolve and clear the pending continuation exactly once. Main-actor
+    /// isolated, so the take-and-clear is atomic without an external lock.
     private func resumeCompletion() {
-        lock.lock()
         let pending = completion
         completion = nil
-        lock.unlock()
         pending?.resume()
     }
 }
 
 // MARK: AVSpeechSynthesizerDelegate
 
-extension LiveTextToSpeechService: AVSpeechSynthesizerDelegate {
+// AVSpeechSynthesizer delivers delegate callbacks on the main queue, so these
+// methods are main-actor-isolated. `@preconcurrency` quiets the cross-isolation
+// warning for the (nonisolated) AVSpeechSynthesizerDelegate protocol.
+extension LiveTextToSpeechService: @preconcurrency AVSpeechSynthesizerDelegate {
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         resumeCompletion()
     }
