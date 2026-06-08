@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# Build, sign, and upload SmartEars to TestFlight.
+#
+# Usage:
+#   scripts/testflight.sh archive   # archive + export a signed .ipa
+#   scripts/testflight.sh upload    # upload the exported .ipa to App Store Connect
+#   scripts/testflight.sh release   # archive + export + upload (the full pipeline)
+#
+# Upload auth uses an App Store Connect API key (the same kind you already use
+# for ShelfIQ). Provide these via env vars (never commit the .p8):
+#   ASC_KEY_ID     e.g. 2X9ABC3DEF
+#   ASC_ISSUER_ID  e.g. 69a6de70-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+#   ASC_KEY_PATH   path to AuthKey_<KEY_ID>.p8  (default: ~/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8)
+#
+# Alternatively, skip `upload` and drag the .ipa from build/export into Xcode's
+# Organizer / Transporter — that path needs no API key.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+SCHEME="SmartEars"
+PROJECT="SmartEars.xcodeproj"
+ARCHIVE_PATH="build/SmartEars.xcarchive"
+EXPORT_DIR="build/export"
+EXPORT_OPTS="Config/ExportOptions.plist"
+
+ensure_project() {
+  command -v xcodegen >/dev/null && xcodegen generate >/dev/null
+}
+
+do_archive() {
+  ensure_project
+  echo "==> Archiving $SCHEME (Release, generic iOS device)…"
+  xcodebuild -project "$PROJECT" -scheme "$SCHEME" \
+    -configuration Release \
+    -destination 'generic/platform=iOS' \
+    -archivePath "$ARCHIVE_PATH" \
+    -allowProvisioningUpdates \
+    clean archive
+
+  echo "==> Exporting signed .ipa…"
+  xcodebuild -exportArchive \
+    -archivePath "$ARCHIVE_PATH" \
+    -exportPath "$EXPORT_DIR" \
+    -exportOptionsPlist "$EXPORT_OPTS" \
+    -allowProvisioningUpdates
+  echo "==> Exported: $(ls "$EXPORT_DIR"/*.ipa 2>/dev/null || echo '(no ipa found)')"
+}
+
+do_upload() {
+  : "${ASC_KEY_ID:?set ASC_KEY_ID}"
+  : "${ASC_ISSUER_ID:?set ASC_ISSUER_ID}"
+  local key_path="${ASC_KEY_PATH:-$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8}"
+  local ipa
+  ipa="$(ls "$EXPORT_DIR"/*.ipa | head -1)"
+  echo "==> Uploading $ipa to App Store Connect / TestFlight…"
+  xcrun altool --upload-app -f "$ipa" -t ios \
+    --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+  echo "==> Done. New build will appear in TestFlight after processing (a few minutes)."
+}
+
+case "${1:-release}" in
+  archive) do_archive ;;
+  upload)  do_upload ;;
+  release) do_archive; do_upload ;;
+  *) echo "usage: $0 {archive|upload|release}"; exit 1 ;;
+esac

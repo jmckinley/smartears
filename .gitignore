@@ -18,3 +18,8 @@ Secrets.plist
 GoogleService-Info.plist
 # Claude Code workspace
 .claude/
+
+# App Store Connect API keys
+*.p8
+AuthKey_*
+build/export/
