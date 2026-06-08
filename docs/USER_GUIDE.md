@@ -89,13 +89,14 @@ Most features work **for free with no setup at all**:
 | **Weather** | Open-Meteo | None — just allow Location |
 | **Stocks** | Yahoo Finance | None |
 | **Breaking news** | Google News | None |
-| **Ask-AI / conversation** | Anthropic | Paste an API key (Settings → AI & Accounts) |
+| **Ask-AI / conversation** | Apple on-device AI (iOS 26) | None on iPhone 15 Pro+ |
 | **Email (read/important)** | Gmail | Connect Gmail |
 
-So weather, stocks, and news answer out of the box. Only **“ask the AI a
-question”** needs a key — get one at [console.anthropic.com](https://console.anthropic.com)
-and paste it in **Settings → AI & Accounts**. Keys live only in your device
-Keychain.
+On a modern iPhone (15 Pro or newer, iOS 26), **even Ask-AI is free and key-free** —
+it runs on Apple's on-device Foundation Models, fully private. On older devices,
+paste an Anthropic key in **Settings → AI & Accounts** (get one at
+[console.anthropic.com](https://console.anthropic.com)). Either way, weather,
+stocks, and news need no setup. Keys live only in your device Keychain.
 
 ---
 

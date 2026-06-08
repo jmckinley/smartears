@@ -162,7 +162,16 @@ public final class AppEnvironment: ObservableObject {
         self.messageCompose = realCompose
         self.messageInbox = realInbox
 
-        let realLLM = llm ?? RemoteLLMClient(keyProvider: APIKeyProvider(configKey: self.config.llmAPIKey))
+        // Prefer Apple's on-device Foundation Models (free, private, no key) when
+        // available; otherwise fall back to the key-based Anthropic client.
+        let realLLM: any LLMService
+        if let llm {
+            realLLM = llm
+        } else if FoundationModelsLLMService.isAvailable {
+            realLLM = FoundationModelsLLMService()
+        } else {
+            realLLM = RemoteLLMClient(keyProvider: APIKeyProvider(configKey: self.config.llmAPIKey))
+        }
         self.llm = realLLM
 
         // Default info providers are FREE and need NO API key:
@@ -256,7 +265,7 @@ public final class AppEnvironment: ObservableObject {
         /// Optional helper text shown under each field in Settings.
         public var hint: String {
             switch self {
-            case .llm: return "Enables “ask the AI” questions. Get a key at console.anthropic.com."
+            case .llm: return "Ask-AI runs free on-device on iPhone 15 Pro+ (iOS 26). Only older devices need a key — get one at console.anthropic.com."
             case .gmail: return "Connect Gmail to read & flag important email."
             }
         }
