@@ -165,13 +165,15 @@ public final class AppEnvironment: ObservableObject {
         let realLLM = llm ?? RemoteLLMClient(keyProvider: APIKeyProvider(configKey: self.config.llmAPIKey))
         self.llm = realLLM
 
-        let realWeather = weather ?? Self.makeWeatherService()
+        // Default info providers are FREE and need NO API key:
+        //   weather -> Open-Meteo, stocks -> Yahoo Finance, news -> Google News RSS.
+        let realWeather = weather ?? OpenMeteoWeatherService()
         self.weather = realWeather
 
-        let realStocks = stocks ?? RemoteStockService(apiKey: self.config.stocksAPIKey ?? "")
+        let realStocks = stocks ?? YahooStockService()
         self.stocks = realStocks
 
-        let realNews = news ?? RemoteNewsService(apiKey: self.config.newsAPIKey ?? "")
+        let realNews = news ?? GoogleNewsRSSService()
         self.news = realNews
 
         let realEmail = email ?? GmailService(tokenProvider: { store.value(for: "SE_GMAIL_TOKEN") })
@@ -240,24 +242,28 @@ public final class AppEnvironment: ObservableObject {
     @Published public private(set) var pendingCredentials: [CredentialSlot: Bool] = [:]
 
     public enum CredentialSlot: String, CaseIterable, Identifiable, Sendable {
-        case llm, weather, stocks, news, gmail
+        // Only the LLM (Ask-AI) and Gmail need credentials. Weather, stocks, and
+        // news use free, key-free providers (Open-Meteo, Yahoo Finance, Google
+        // News RSS), so they're intentionally absent here.
+        case llm, gmail
         public var id: String { rawValue }
         public var displayName: String {
             switch self {
-            case .llm: return "LLM API Key"
-            case .weather: return "Weather API Key"
-            case .stocks: return "Stocks API Key"
-            case .news: return "News API Key"
-            case .gmail: return "Gmail Client ID"
+            case .llm: return "AI (Anthropic) API Key"
+            case .gmail: return "Gmail Sign-in"
             }
         }
-        /// The Info.plist key this credential would resolve to in a real build.
+        /// Optional helper text shown under each field in Settings.
+        public var hint: String {
+            switch self {
+            case .llm: return "Enables “ask the AI” questions. Get a key at console.anthropic.com."
+            case .gmail: return "Connect Gmail to read & flag important email."
+            }
+        }
+        /// The Info.plist / Keychain key this credential resolves to.
         public var infoPlistKey: String {
             switch self {
             case .llm: return "SE_LLM_API_KEY"
-            case .weather: return "SE_WEATHER_API_KEY"
-            case .stocks: return "SE_STOCKS_API_KEY"
-            case .news: return "SE_NEWS_API_KEY"
             case .gmail: return "SE_GMAIL_CLIENT_ID"
             }
         }
@@ -275,9 +281,6 @@ public final class AppEnvironment: ObservableObject {
         if let stored = credentialStore.value(for: slot.infoPlistKey) { return stored }
         switch slot {
         case .llm: return config.llmAPIKey
-        case .weather: return config.weatherAPIKey
-        case .stocks: return config.stocksAPIKey
-        case .news: return config.newsAPIKey
         case .gmail: return config.gmailClientID
         }
     }

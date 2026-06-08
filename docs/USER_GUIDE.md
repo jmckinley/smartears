@@ -82,19 +82,20 @@ incoming messages and emails — so you stay hands-free and heads-up.
 
 ### Enabling live data & AI
 
-SmartEars uses real services — to light them up, add the matching key in
-**Settings → API Keys**:
+Most features work **for free with no setup at all**:
 
-| Feature | What to add |
-|---|---|
-| **Ask-AI / conversation** | Your LLM (Anthropic) API key |
-| **Stocks** | Your stock-data provider key |
-| **News** | Your news provider key |
-| **Email (read/important)** | Sign in to Gmail |
-| **Weather** | Works once WeatherKit + Location are enabled (no key to paste) |
+| Feature | Source | Setup |
+|---|---|---|
+| **Weather** | Open-Meteo | None — just allow Location |
+| **Stocks** | Yahoo Finance | None |
+| **Breaking news** | Google News | None |
+| **Ask-AI / conversation** | Anthropic | Paste an API key (Settings → AI & Accounts) |
+| **Email (read/important)** | Gmail | Connect Gmail |
 
-Until a key is added, that specific feature will tell you it needs setup rather
-than make something up. Add the key and it works immediately on the next request.
+So weather, stocks, and news answer out of the box. Only **“ask the AI a
+question”** needs a key — get one at [console.anthropic.com](https://console.anthropic.com)
+and paste it in **Settings → AI & Accounts**. Keys live only in your device
+Keychain.
 
 ---
 

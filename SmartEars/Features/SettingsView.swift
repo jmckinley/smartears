@@ -132,9 +132,9 @@ struct SettingsView: View {
                 )
             }
         } header: {
-            Text("API Keys")
+            Text("AI & Accounts")
         } footer: {
-            Text("Keys are stored in the iOS Keychain (placeholder in this build) — never in source or backups. Leave blank to keep running on the bundled mock data.")
+            Text("Weather, stocks, and news work for free with no setup (Open-Meteo, Yahoo Finance, Google News). Only “ask the AI” needs a key. Anything you enter is stored in the device Keychain — never in source, iCloud, or backups.")
         }
     }
 
@@ -197,8 +197,12 @@ private struct CredentialField: View {
                 }
             }
 
+            Text(slot.hint)
+                .font(SETheme.Typography.caption)
+                .foregroundStyle(SETheme.Colors.textSecondary)
+
             HStack {
-                SecureField("Paste key (\(slot.infoPlistKey))", text: $value)
+                SecureField(slot == .gmail ? "Paste OAuth token" : "Paste API key", text: $value)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.system(.footnote, design: .monospaced))
