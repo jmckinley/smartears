@@ -38,14 +38,34 @@ ensure_project() {
   command -v xcodegen >/dev/null && xcodegen generate >/dev/null
 }
 
+# App Store Connect API key auth for HEADLESS signing/provisioning. Without this,
+# command-line xcodebuild cannot use the account you added in the Xcode GUI and
+# fails with "No Account for Team". With it, archive/export/upload are hands-off.
+ASC_AUTH_ARGS=()
+resolve_auth() {
+  local key_path="${ASC_KEY_PATH:-$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID:-}.p8}"
+  if [[ -n "${ASC_KEY_ID:-}" && -n "${ASC_ISSUER_ID:-}" && -f "$key_path" ]]; then
+    ASC_AUTH_ARGS=(
+      -authenticationKeyID "$ASC_KEY_ID"
+      -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+      -authenticationKeyPath "$key_path"
+    )
+  else
+    echo "WARNING: App Store Connect API key not found — falling back to interactive"
+    echo "         signing. Set ASC_KEY_ID/ASC_ISSUER_ID in Config/asc.env and put"
+    echo "         AuthKey_<KEY_ID>.p8 in ~/.appstoreconnect/private_keys/ for headless runs."
+  fi
+}
+
 do_archive() {
   ensure_project
+  resolve_auth
   echo "==> Archiving $SCHEME (Release, generic iOS device)…"
   xcodebuild -project "$PROJECT" -scheme "$SCHEME" \
     -configuration Release \
     -destination 'generic/platform=iOS' \
     -archivePath "$ARCHIVE_PATH" \
-    -allowProvisioningUpdates \
+    -allowProvisioningUpdates ${ASC_AUTH_ARGS[@]+"${ASC_AUTH_ARGS[@]}"} \
     clean archive
 
   echo "==> Exporting signed .ipa…"
@@ -53,7 +73,7 @@ do_archive() {
     -archivePath "$ARCHIVE_PATH" \
     -exportPath "$EXPORT_DIR" \
     -exportOptionsPlist "$EXPORT_OPTS" \
-    -allowProvisioningUpdates
+    -allowProvisioningUpdates ${ASC_AUTH_ARGS[@]+"${ASC_AUTH_ARGS[@]}"}
   echo "==> Exported: $(ls "$EXPORT_DIR"/*.ipa 2>/dev/null || echo '(no ipa found)')"
 }
 
