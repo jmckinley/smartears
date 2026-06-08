@@ -1,0 +1,75 @@
+name: SmartEars
+options:
+  bundleIdPrefix: com.greatfallsventures
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_STRICT_CONCURRENCY: targeted
+    GENERATE_INFOPLIST_FILE: NO
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+  # Optional gitignored xcconfig supplies real API keys. Absent -> Mock services.
+  # configs:
+  #   Debug: Config/Secrets.xcconfig
+  #   Release: Config/Secrets.xcconfig
+
+targets:
+  SmartEars:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: SmartEars
+        excludes:
+          - "**/.DS_Store"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.greatfallsventures.smartears
+        INFOPLIST_FILE: SmartEars/Info/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SUPPORTS_MACCATALYST: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_EMIT_LOC_STRINGS: YES
+        # NOTE: API keys are injected via a gitignored Config/Secrets.xcconfig
+        # referenced by Info.plist placeholder keys ($(SE_LLM_API_KEY) etc.).
+        # No secrets are committed; absent keys -> Mock services at runtime.
+    info:
+      path: SmartEars/Info/Info.plist
+      properties:
+        CFBundleDisplayName: SmartEars
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # --- Usage descriptions (required for permissions) ---
+        NSMicrophoneUsageDescription: "SmartEars listens for your wake word and your spoken requests."
+        NSSpeechRecognitionUsageDescription: "SmartEars converts your speech to text to understand your requests."
+        NSContactsUsageDescription: "SmartEars uses your contacts to address messages and emails by name."
+        NSLocationWhenInUseUsageDescription: "SmartEars uses your location to give local weather."
+        NSMotionUsageDescription: "SmartEars uses AirPods head-motion to detect nod/shake confirmations."
+        NSUserTrackingUsageDescription: "Used only to improve assistant suggestions. No data is sold."
+        # --- Background modes for always-listening + audio output ---
+        UIBackgroundModes:
+          - audio
+          - processing
+          - remote-notification
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.greatfallsventures.smartears.alertrefresh
+        # --- Credential placeholders (resolved from xcconfig; safe if empty) ---
+        SE_LLM_API_KEY: "$(SE_LLM_API_KEY)"
+        SE_WEATHER_API_KEY: "$(SE_WEATHER_API_KEY)"
+        SE_STOCKS_API_KEY: "$(SE_STOCKS_API_KEY)"
+        SE_NEWS_API_KEY: "$(SE_NEWS_API_KEY)"
+        SE_GMAIL_CLIENT_ID: "$(SE_GMAIL_CLIENT_ID)"

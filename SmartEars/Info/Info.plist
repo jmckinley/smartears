@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.greatfallsventures.smartears.alertrefresh</string>
+	</array>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>SmartEars</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSContactsUsageDescription</key>
+	<string>SmartEars uses your contacts to address messages and emails by name.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SmartEars uses your location to give local weather.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>SmartEars listens for your wake word and your spoken requests.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>SmartEars uses AirPods head-motion to detect nod/shake confirmations.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>SmartEars converts your speech to text to understand your requests.</string>
+	<key>NSUserTrackingUsageDescription</key>
+	<string>Used only to improve assistant suggestions. No data is sold.</string>
+	<key>SE_GMAIL_CLIENT_ID</key>
+	<string>$(SE_GMAIL_CLIENT_ID)</string>
+	<key>SE_LLM_API_KEY</key>
+	<string>$(SE_LLM_API_KEY)</string>
+	<key>SE_NEWS_API_KEY</key>
+	<string>$(SE_NEWS_API_KEY)</string>
+	<key>SE_STOCKS_API_KEY</key>
+	<string>$(SE_STOCKS_API_KEY)</string>
+	<key>SE_WEATHER_API_KEY</key>
+	<string>$(SE_WEATHER_API_KEY)</string>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>processing</string>
+		<string>remote-notification</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+</dict>
+</plist>

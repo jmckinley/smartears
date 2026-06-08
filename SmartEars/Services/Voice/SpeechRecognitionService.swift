@@ -1,0 +1,261 @@
+//
+//  SpeechRecognitionService.swift
+//  SmartEars — Voice layer
+//
+//  Continuous, on-device speech-to-text built on `SFSpeechRecognizer` + an
+//  `AVAudioEngine` input tap. This is the STT half of the always-on voice
+//  pipeline (wake-word -> STT -> intent -> TTS).
+//
+//  Apple-platform reality checks honestly reflected here:
+//   * `SFSpeechRecognizer` requires BOTH a microphone-usage and a
+//     speech-recognition-usage authorization (Info.plist: NSMicrophoneUsageDescription
+//     and NSSpeechRecognitionUsageDescription). We request them explicitly.
+//   * On-device recognition (`requiresOnDeviceRecognition = true`) avoids sending
+//     audio to Apple's servers and works offline, but is only available when the
+//     recognizer reports `supportsOnDeviceRecognition`. We fall back to server
+//     recognition only if on-device is unavailable.
+//   * There is NO truly "always-on, zero-cost" recognition API for third parties
+//     the way first-party "Hey Siri" works; we run a real audio tap, which has a
+//     battery cost. Endpointing (stop-on-silence) and a max-utterance cap keep
+//     each recognition session bounded.
+//
+
+import Foundation
+import Speech
+import AVFoundation
+
+// MARK: - Tunables
+
+/// Endpointing / capping parameters for a single recognition session.
+public struct SpeechRecognitionTuning: Sendable {
+    /// Stop the utterance after this much trailing silence (no new partial text).
+    public var endpointSilenceSeconds: TimeInterval
+    /// Hard cap on a single utterance so a stuck session can't run forever.
+    public var maxUtteranceSeconds: TimeInterval
+    /// Prefer on-device recognition when the recognizer supports it.
+    public var preferOnDevice: Bool
+
+    public init(
+        endpointSilenceSeconds: TimeInterval = 1.5,
+        maxUtteranceSeconds: TimeInterval = 30,
+        preferOnDevice: Bool = true
+    ) {
+        self.endpointSilenceSeconds = endpointSilenceSeconds
+        self.maxUtteranceSeconds = maxUtteranceSeconds
+        self.preferOnDevice = preferOnDevice
+    }
+
+    public static let `default` = SpeechRecognitionTuning()
+}
+
+// MARK: - Permissions helper
+
+/// Centralized permission requests for the voice pipeline. Both speech and
+/// microphone authorization are required before any recognition can run.
+public enum SpeechPermissions {
+    /// Requests speech-recognition authorization. Returns true if granted.
+    public static func requestSpeechAuthorization() async -> Bool {
+        await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status == .authorized)
+            }
+        }
+    }
+
+    /// Requests microphone (record) permission. Returns true if granted.
+    public static func requestMicrophoneAuthorization() async -> Bool {
+        await withCheckedContinuation { continuation in
+            // AVAudioApplication is the iOS 17+ surface; AVAudioSession's
+            // requestRecordPermission is deprecated there.
+            AVAudioApplication.requestRecordPermission { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+    }
+
+    /// Convenience: both must be granted for recognition to function.
+    public static func requestAll() async -> Bool {
+        async let speech = requestSpeechAuthorization()
+        async let mic = requestMicrophoneAuthorization()
+        let speechGranted = await speech
+        let micGranted = await mic
+        return speechGranted && micGranted
+    }
+}
+
+// MARK: - Live implementation
+
+/// Live STT using `SFSpeechRecognizer` over an `AVAudioEngine` input tap.
+///
+/// Conforms to `SpeechRecognizing` (defined in Models.swift). Each call to
+/// `transcribe()` runs ONE utterance: it streams partial `Transcription` values
+/// and finishes on trailing silence, the max-utterance cap, or a final result.
+///
+/// The type is an `actor` so the engine/request/task lifecycle is serialized and
+/// safe to use from Swift Concurrency call sites.
+public actor LiveSpeechRecognitionService: SpeechRecognizing {
+
+    private let recognizer: SFSpeechRecognizer?
+    private let tuning: SpeechRecognitionTuning
+    private let audioEngine = AVAudioEngine()
+
+    /// In-flight request/task for the current utterance (one at a time).
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+
+    public init(
+        locale: Locale = Locale(identifier: "en-US"),
+        tuning: SpeechRecognitionTuning = .default
+    ) {
+        self.recognizer = SFSpeechRecognizer(locale: locale)
+        self.tuning = tuning
+    }
+
+    /// Streams transcriptions for a single utterance. Ends on silence, the
+    /// max-utterance cap, an error, or a final SFSpeech result.
+    nonisolated public func transcribe() -> AsyncThrowingStream<Transcription, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                await self.start(continuation: continuation)
+            }
+            continuation.onTermination = { _ in
+                Task { await self.teardown() }
+            }
+        }
+    }
+
+    // MARK: Session lifecycle
+
+    private func start(continuation: AsyncThrowingStream<Transcription, Error>.Continuation) async {
+        guard let recognizer, recognizer.isAvailable else {
+            continuation.finish(throwing: SmartEarsError.unsupported("Speech recognizer unavailable for this locale/device."))
+            return
+        }
+        guard SFSpeechRecognizer.authorizationStatus() == .authorized else {
+            continuation.finish(throwing: SmartEarsError.permissionDenied("Speech recognition not authorized."))
+            return
+        }
+
+        // Configure the shared audio session for measurement-quality capture.
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker])
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            continuation.finish(throwing: SmartEarsError.other("Audio session setup failed: \(error.localizedDescription)"))
+            return
+        }
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        if tuning.preferOnDevice, recognizer.supportsOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = true
+        }
+        self.request = request
+
+        // Endpointing + cap timers, driven off the main session clock.
+        let silenceCap = tuning.endpointSilenceSeconds
+        let hardCap = tuning.maxUtteranceSeconds
+        var lastUpdate = Date()
+        let startedAt = Date()
+
+        self.task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            guard let self else { return }
+            if let result {
+                let best = result.bestTranscription.formattedString
+                let segmentConfidence = result.bestTranscription.segments.last?.confidence ?? 1.0
+                lastUpdate = Date()
+                continuation.yield(
+                    Transcription(text: best, isFinal: result.isFinal, confidence: segmentConfidence)
+                )
+                if result.isFinal {
+                    continuation.finish()
+                    Task { await self.teardown() }
+                }
+            }
+            if let error {
+                continuation.finish(throwing: SmartEarsError.other("Recognition error: \(error.localizedDescription)"))
+                Task { await self.teardown() }
+            }
+        }
+
+        // Install the input tap and start the engine.
+        let inputNode = audioEngine.inputNode
+        let format = inputNode.outputFormat(forBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            request.append(buffer)
+        }
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+        } catch {
+            continuation.finish(throwing: SmartEarsError.other("Audio engine failed to start: \(error.localizedDescription)"))
+            teardown()
+            return
+        }
+
+        // Endpoint watchdog: stop the utterance on trailing silence or the cap.
+        Task { [weak self] in
+            while true {
+                try? await Task.sleep(nanoseconds: 250_000_000) // 0.25s poll
+                guard let self, await self.isRunning else { return }
+                let now = Date()
+                if now.timeIntervalSince(lastUpdate) >= silenceCap || now.timeIntervalSince(startedAt) >= hardCap {
+                    continuation.finish()
+                    await self.teardown()
+                    return
+                }
+            }
+        }
+    }
+
+    private var isRunning: Bool { audioEngine.isRunning }
+
+    /// Tears down the engine/tap/request for the current utterance.
+    private func teardown() {
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        request?.endAudio()
+        request = nil
+        task?.cancel()
+        task = nil
+        // Leave the audio session active so TTS can use it immediately; the
+        // session manager owns activation/deactivation policy.
+    }
+}
+
+// MARK: - Stub implementation
+
+/// Deterministic stub for previews, unit tests, and running with no microphone
+/// (e.g. the iOS Simulator, where live recognition is flaky). Emits a couple of
+/// partials then a final canned transcription.
+public struct StubSpeechRecognitionService: SpeechRecognizing {
+
+    /// The final text the stub "hears". Override to script tests.
+    public let scriptedText: String
+    /// Artificial inter-partial delay so UI state transitions are observable.
+    public let stepDelay: Duration
+
+    public init(scriptedText: String = "what's the weather", stepDelay: Duration = .milliseconds(200)) {
+        self.scriptedText = scriptedText
+        self.stepDelay = stepDelay
+    }
+
+    public func transcribe() -> AsyncThrowingStream<Transcription, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                let words = scriptedText.split(separator: " ").map(String.init)
+                var building = ""
+                for word in words {
+                    building += building.isEmpty ? word : " \(word)"
+                    continuation.yield(Transcription(text: building, isFinal: false, confidence: 0.9))
+                    try? await Task.sleep(for: stepDelay)
+                }
+                continuation.yield(Transcription(text: scriptedText, isFinal: true, confidence: 0.95))
+                continuation.finish()
+            }
+        }
+    }
+}
