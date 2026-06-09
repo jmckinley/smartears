@@ -161,7 +161,13 @@ public final class NowPlayingActivationService: NSObject {
         installRouteObserverIfNeeded()
         self.lastForeground = foreground
         self.lastTapControlEnabled = tapControlEnabled
-        let shouldArm = foreground && tapControlEnabled && isHeadphoneRoute
+        // NOTE: we do NOT gate on isHeadphoneRoute. Before SmartEars activates any
+        // audio session, AVAudioSession.currentRoute reports the built-in speaker
+        // even when AirPods are connected — so gating on it meant arm() never ran
+        // and the now-playing slot was never claimed ("Not Playing"). Claiming the
+        // hold session is itself what engages the AirPods route. Tap control is an
+        // explicit opt-out (default on); that's the user's lever, not route guessing.
+        let shouldArm = foreground && tapControlEnabled
         if shouldArm { arm() } else { disarm() }
     }
 
@@ -228,7 +234,10 @@ public final class NowPlayingActivationService: NSObject {
         // MPRemoteCommandCenter handlers, so the hold player must really play.
         guard let player = try? AVAudioPlayer(data: Self.silentWAVData) else { return }
         player.numberOfLoops = -1
-        player.volume = 0.0
+        // Full volume is still SILENT (the buffer is all-zero samples), but a
+        // volume-0 player can be treated by iOS as "not producing audio" and fail
+        // to claim the now-playing slot — which is what we need to receive taps.
+        player.volume = 1.0
         player.prepareToPlay()
         player.play()
         holdPlayer = player
