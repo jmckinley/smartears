@@ -95,7 +95,13 @@ public final class NowPlayingActivationService: NSObject {
 
     // MARK: Turn coordination (called by RootView)
 
-    public func turnDidStart() { isTurnActive = true }
+    public func turnDidStart() {
+        isTurnActive = true
+        // Hand the audio hardware to the capture/playback path for the turn. Leaving
+        // the silent hold player running while the engine starts capture on a live
+        // Bluetooth route can destabilize the input format. endTurn() restarts it.
+        stopHoldPlayer()
+    }
     public func turnDidEnd() { isTurnActive = false }
 
     /// Called at every turn terminal path (completion, error, empty, interrupt,

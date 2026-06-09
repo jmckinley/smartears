@@ -210,20 +210,25 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
         }
 
         // Install the input tap and start the engine.
+        //
+        // CRITICAL: installTap traps (uncatchable AVAudioEngine exception, app
+        // crash) if `format` doesn't match the input node's native format. On a
+        // Bluetooth/AirPods route the node can briefly report 0ch/0Hz while the
+        // route settles, so we must NOT synthesize a different format — we wait for
+        // a valid NATIVE format and install exactly that, or bail gracefully.
         let inputNode = audioEngine.inputNode
-        let hwFormat = inputNode.outputFormat(forBus: 0)
-        let tapFormat: AVAudioFormat
-        if hwFormat.channelCount > 0, hwFormat.sampleRate > 0 {
-            tapFormat = hwFormat
-        } else if let fallback = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1) {
-            // HFP route in flux reported an invalid format; use a safe 16k mono
-            // PCM format so installTap doesn't trap. SFSpeech accepts this.
-            tapFormat = fallback
-        } else {
-            finish(continuation: continuation, error: SmartEarsError.other("No valid input format available."))
+        var hwFormat = inputNode.outputFormat(forBus: 0)
+        var attempts = 0
+        while (hwFormat.channelCount == 0 || hwFormat.sampleRate == 0), attempts < 10 {
+            try? await Task.sleep(nanoseconds: 50_000_000)  // 50 ms; route still settling
+            hwFormat = inputNode.outputFormat(forBus: 0)
+            attempts += 1
+        }
+        guard hwFormat.channelCount > 0, hwFormat.sampleRate > 0 else {
+            finish(continuation: continuation, error: SmartEarsError.other("Microphone wasn't ready (Bluetooth route still connecting). Try again."))
             return
         }
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { buffer, _ in
             request.append(buffer)
         }
         audioEngine.prepare()
