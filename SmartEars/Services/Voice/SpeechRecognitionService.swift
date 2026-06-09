@@ -216,11 +216,24 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
         // Bluetooth/AirPods route the node can briefly report 0ch/0Hz while the
         // route settles, so we must NOT synthesize a different format — we wait for
         // a valid NATIVE format and install exactly that, or bail gracefully.
+        // On AirPods the mic is HFP. Arming holds an A2DP (output-only) route, so
+        // configureForCapture above kicks off an A2DP->HFP switch that can take
+        // 1-2 s. We must let the route actually provide a mic input BEFORE touching
+        // the engine's input node, because AVAudioEngine caches the input format on
+        // first access — read it too early on a settling BT route and it caches an
+        // invalid (0ch/0Hz) format that never recovers. So: wait for the session's
+        // route to expose an input first, then read a valid native format.
+        let avSession = AVAudioSession.sharedInstance()
+        var waited = 0
+        while avSession.currentRoute.inputs.isEmpty, waited < 80 {   // up to ~4 s
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            waited += 1
+        }
         let inputNode = audioEngine.inputNode
         var hwFormat = inputNode.outputFormat(forBus: 0)
         var attempts = 0
-        while (hwFormat.channelCount == 0 || hwFormat.sampleRate == 0), attempts < 10 {
-            try? await Task.sleep(nanoseconds: 50_000_000)  // 50 ms; route still settling
+        while (hwFormat.channelCount == 0 || hwFormat.sampleRate == 0), attempts < 40 {  // up to ~2 s
+            try? await Task.sleep(nanoseconds: 50_000_000)
             hwFormat = inputNode.outputFormat(forBus: 0)
             attempts += 1
         }

@@ -91,19 +91,22 @@ public final class AudioSessionController {
         try session.setActive(true)
     }
 
-    /// ACTIVATION-HOLD phase: a playback-capable session that MIXES with the
-    /// user's music (no ducking) purely so SmartEars can own the now-playing slot
-    /// and receive AirPod transport taps while ARMED. We deliberately use
-    /// .mixWithOthers (not .duckOthers) so arming alone never lowers the user's
-    /// music — only an actual turn (configureForCapture/Playback) ducks. It must
-    /// be playback-capable for MPNowPlayingInfoCenter ownership; .allowBluetoothA2DP
-    /// keeps the wideband route to AirPods.
+    /// ACTIVATION-HOLD phase: a playback session that genuinely CLAIMS the
+    /// now-playing slot so SmartEars becomes the active media app and AirPod
+    /// transport taps route to our MPRemoteCommandCenter handlers.
+    ///
+    /// We do NOT use .mixWithOthers: a subordinate/mixing audio source never
+    /// becomes the Now Playing app, so taps would keep going to the user's music
+    /// app instead of us. Claiming the slot is the documented tradeoff — while
+    /// SmartEars is armed (foreground + AirPods) it owns media control, so opening
+    /// the app pauses other audio; leaving the app releases it back (disarm /
+    /// releaseActivationHold). .allowBluetoothA2DP keeps the wideband route.
     public func configureForActivationHold() throws {
         installObserversIfNeeded()
         try session.setCategory(
             .playback,
             mode: .default,
-            options: [.mixWithOthers, .allowBluetoothA2DP]
+            options: [.allowBluetoothA2DP]
         )
         try session.setActive(true)
     }
