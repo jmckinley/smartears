@@ -32,6 +32,11 @@ public final class LiveLocationProvider: NSObject, CLLocationManagerDelegate, @u
 
     private let manager = CLLocationManager()
     private var continuation: CheckedContinuation<CLLocation, Error>?
+    /// Fails the request if no fix / authorization decision arrives in time, so a
+    /// weather query can never hang the assistant.
+    private var timeoutTask: Task<Void, Never>?
+    /// Serializes `finish` so the timeout and a delegate callback can't both resume.
+    private let lock = NSLock()
 
     public override init() {
         super.init()
@@ -44,6 +49,11 @@ public final class LiveLocationProvider: NSObject, CLLocationManagerDelegate, @u
     public func location() async throws -> CLLocation {
         try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
+            self.timeoutTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 8_000_000_000)  // 8 s
+                guard !Task.isCancelled else { return }
+                self?.finish(.failure(SmartEarsError.network("Couldn't get your location for weather. Make sure Location is enabled for SmartEars.")))
+            }
             switch manager.authorizationStatus {
             case .notDetermined:
                 manager.requestWhenInUseAuthorization()
@@ -59,8 +69,12 @@ public final class LiveLocationProvider: NSObject, CLLocationManagerDelegate, @u
 
     /// Resumes the pending continuation exactly once and clears it.
     private func finish(_ result: Result<CLLocation, Error>) {
-        guard let continuation else { return }
+        lock.lock()
+        guard let continuation else { lock.unlock(); return }
         self.continuation = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        lock.unlock()
         continuation.resume(with: result)
     }
 

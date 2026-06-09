@@ -327,11 +327,25 @@ struct RootView: View {
                 return
             }
 
-            // thinking: classify the intent (LLM fallback) and route it.
+            // thinking: classify the intent (LLM fallback) and route it. A watchdog
+            // guarantees the turn can never hang here (e.g. a tool waiting on a slow
+            // dependency like location) — without it a stuck turn leaves
+            // isProcessing=true and the orb stops responding to the next tap.
             env.voiceState = .thinking
+            let watchdog = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled, env.voiceState == .thinking else { return }
+                turnTask?.cancel()
+                env.liveTranscript = ""
+                env.voiceState = .idle
+                env.activation.endTurn()
+                isProcessing = false
+                await env.speechSynthesizer.speak("Sorry, that took too long. Please try again.")
+            }
             let intent = (try? await env.llm.classifyIntent(transcript: heard))
                 ?? .conversational(prompt: heard)
             let response = await env.toolRouter.route(intent)
+            watchdog.cancel()
 
             if Task.isCancelled { return }
 
