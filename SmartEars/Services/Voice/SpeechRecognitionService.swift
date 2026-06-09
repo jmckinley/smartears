@@ -146,6 +146,13 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
             continuation.finish(throwing: SmartEarsError.permissionDenied("Speech recognition not authorized."))
             return
         }
+        // The capture path also needs MICROPHONE permission (distinct from speech).
+        // Without it the BT input route is empty and we'd fail with a confusing
+        // "mic not ready" instead of a clear, actionable message.
+        guard AVAudioApplication.shared.recordPermission == .granted else {
+            continuation.finish(throwing: SmartEarsError.permissionDenied("Microphone access is off. Enable it in Settings › SmartEars › Microphone."))
+            return
+        }
 
         // Defensive reset: if a prior utterance's engine/tap/request wasn't fully
         // cleaned up (e.g. a second transcribe() arrives before the first stream
@@ -238,7 +245,13 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
             attempts += 1
         }
         guard hwFormat.channelCount > 0, hwFormat.sampleRate > 0 else {
-            finish(continuation: continuation, error: SmartEarsError.other("Microphone wasn't ready (Bluetooth route still connecting). Try again."))
+            // Diagnostic bail: report the actual route state so we can see WHY the
+            // mic didn't come up (empty inputs = BT route never engaged; built-in
+            // input present = AirPods HFP failed to switch).
+            let ins = avSession.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
+            let outs = avSession.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+            finish(continuation: continuation, error: SmartEarsError.other(
+                "Mic not ready — in:[\(ins.isEmpty ? "none" : ins)] out:[\(outs.isEmpty ? "none" : outs)] fmt:\(Int(hwFormat.sampleRate))/\(hwFormat.channelCount)"))
             return
         }
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { buffer, _ in

@@ -69,9 +69,12 @@ public final class AudioSessionController {
     /// is applied only transiently and removed on idle so music un-ducks.
     public func configureForCapture() throws {
         installObserversIfNeeded()
+        // .voiceChat mode reliably brings up the AirPods HFP mic for two-way voice
+        // (and enables hardware echo cancellation, useful for barge-in). .measurement
+        // disables processing and was slow/unreliable to establish the BT input.
         try session.setCategory(
             .playAndRecord,
-            mode: .measurement,
+            mode: .voiceChat,
             options: [.allowBluetoothHFP, .duckOthers]
         )
         try session.setActive(true)
