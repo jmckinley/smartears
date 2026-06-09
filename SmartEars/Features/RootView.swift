@@ -53,6 +53,15 @@ struct RootView: View {
                     transcriptAndResponse
 
                     Spacer(minLength: 0)
+
+                    // TEMPORARY on-screen diagnostic for the AirPod tap / now-playing
+                    // claim. Read this back to debug "Not Playing". Remove once solid.
+                    Text(env.activation.debugSnapshot())
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.bottom, 4)
+                        .id(env.voiceState)
                 }
                 .padding(SETheme.Spacing.large)
             }

@@ -183,6 +183,18 @@ public final class NowPlayingActivationService: NSObject {
         }
     }
 
+    /// Live snapshot of the activation/now-playing claim state, surfaced on-screen
+    /// so we can see exactly which step of the slot claim is (or isn't) happening.
+    public func debugSnapshot() -> String {
+        let out = AVAudioSession.sharedInstance().currentRoute.outputs
+            .map { $0.portType.rawValue.replacingOccurrences(of: "AVAudioSessionPort", with: "") }
+            .joined(separator: ",")
+        let playing = holdPlayer?.isPlaying ?? false
+        let npInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo != nil
+        let state = MPNowPlayingInfoCenter.default().playbackState == .playing ? "playing" : "other"
+        return "tap:\(lastTapControlEnabled ? "on" : "off") armed:\(isArmed) hold:\(playing) npInfo:\(npInfo) npState:\(state) out:[\(out.isEmpty ? "none" : out)]"
+    }
+
     // MARK: Route observer (re-arm on AirPods connect/disconnect)
 
     /// Single owner of the route-change observer for arming. (AudioSessionController
