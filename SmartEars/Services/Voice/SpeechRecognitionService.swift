@@ -97,7 +97,7 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
 
     private let recognizer: SFSpeechRecognizer?
     private let tuning: SpeechRecognitionTuning
-    private let audioEngine = AVAudioEngine()
+    private var audioEngine = AVAudioEngine()
 
     /// In-flight request/task for the current utterance (one at a time).
     private var request: SFSpeechAudioBufferRecognitionRequest?
@@ -236,6 +236,12 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
             try? await Task.sleep(nanoseconds: 50_000_000)
             waited += 1
         }
+        // Rebuild the engine now that the HFP route is live. The shared instance's
+        // input node was bound at init (before any AirPods route existed) and
+        // reports a stale 0Hz format that never updates on route change — observed
+        // on-device as fmt:0/2. A fresh AVAudioEngine binds its input node to the
+        // current hardware route and reports the real HFP format.
+        audioEngine = AVAudioEngine()
         let inputNode = audioEngine.inputNode
         var hwFormat = inputNode.outputFormat(forBus: 0)
         var attempts = 0
