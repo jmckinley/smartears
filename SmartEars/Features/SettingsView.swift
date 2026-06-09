@@ -15,12 +15,13 @@ struct SettingsView: View {
     @EnvironmentObject private var env: AppEnvironment
 
     /// Local editable copy of the wake phrase; committed to the engine on change.
-    @State private var wakePhrase: String = "Hey SmartEars"
+    @State private var wakePhrase: String = ""
     @State private var newVIP: String = ""
 
     var body: some View {
         Form {
             triggerSection
+            airPodSection
             alertingSection
             vipSection
             sourcesSection
@@ -31,6 +32,7 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .preferredColorScheme(.dark)
+        .onAppear { if wakePhrase.isEmpty { wakePhrase = env.wakePhrase } }
     }
 
     // MARK: Trigger / wake word
@@ -54,7 +56,22 @@ struct SettingsView: View {
         } header: {
             Text("Trigger / Wake Word")
         } footer: {
-            Text("iOS doesn't allow fully-custom always-on keyword models for third-party apps; the wake phrase is matched with on-device speech recognition (SFSpeechRecognizer phrase-match).")
+            Text("Today SmartEars is tap-to-talk: tap the orb to start a turn. A hands-free wake word is coming soon (opt-in); this phrase is saved for when it ships. iOS doesn't allow fully-custom always-on keyword models for third-party apps, so it'll match on-device via speech recognition.")
+        }
+    }
+
+    // MARK: AirPod tap to talk
+
+    private var airPodSection: some View {
+        Section {
+            Toggle(isOn: $env.airPodTapControlEnabled) {
+                Label("AirPod tap to talk", systemImage: "airpods")
+            }
+            .tint(SETheme.Colors.accent)
+        } header: {
+            Text("AirPods")
+        } footer: {
+            Text("When on, single-tap an AirPod to start talking (no wake word) and double-tap to interrupt a reply. To catch a tap instantly, SmartEars becomes your iPhone's \u{201C}now playing\u{201D} app while it's open, so a tap talks to SmartEars instead of controlling your music. The moment you leave SmartEars, your taps go back to your music. We don't lower or pause your music just for listening — only an actual request ducks it briefly. Turn this off to keep your taps on music and use the on-screen orb instead.")
         }
     }
 
@@ -144,7 +161,7 @@ struct SettingsView: View {
         let trimmed = wakePhrase.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         wakePhrase = trimmed
-        env.wakeWord.setWakePhrase(trimmed)
+        env.updateWakePhrase(trimmed)   // sets engine + persists via wakePhrase didSet
     }
 
     private func addVIP() {

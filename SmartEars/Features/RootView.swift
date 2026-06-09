@@ -15,8 +15,16 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.scenePhase) private var scenePhase
     @State private var isProcessing = false
     @State private var showOnboarding = false
+    /// The in-flight voice-turn Task, held so an .interrupt (AirPod double-tap)
+    /// can cancel it — preventing a late completion from stomping the idle state.
+    @State private var turnTask: Task<Void, Never>? = nil
+    /// Bounds the `awaitingFollowUp` state so it can't hang: if no follow-up
+    /// arrives within the window, settle back to `.idle`. (Music is already
+    /// un-ducked on entry to the state.)
+    @State private var followUpTimeout: Task<Void, Never>? = nil
 
     var body: some View {
         NavigationStack {
@@ -54,6 +62,43 @@ struct RootView: View {
             .preferredColorScheme(.dark)
             .onAppear {
                 if !env.hasCompletedOnboarding { showOnboarding = true }
+                // Claim the now-playing slot on first foreground so an idle AirPod
+                // single-tap is caught immediately (NO wake word).
+                env.refreshActivationArming(foreground: true)
+            }
+            .task {
+                // Consume the AirPod activation stream for the view's lifetime.
+                // single-tap (.activate) -> start a turn the same way the orb does;
+                // double-tap (.interrupt) -> barge-in: stop TTS + cancel the turn.
+                for await event in env.activation.events() {
+                    switch event {
+                    case .activate:
+                        startVoiceTurn()                    // immediate: earcon+mic, NO wake word
+                    case .interrupt:
+                        turnTask?.cancel()
+                        followUpTimeout?.cancel()
+                        await env.speechSynthesizer.stop()
+                        env.voiceState = .idle
+                        env.liveTranscript = ""
+                        isProcessing = false
+                        // Re-claims the slot (un-ducks music, keeps single-tap live).
+                        env.activation.endTurn()
+                    }
+                }
+            }
+            .task {
+                // Carry-forward fix: consume the session's `shouldRebuild` event so
+                // an interruption (call/Siri/alarm) or media-services reset that the
+                // session recovered from re-arms the slot. Without this, recovery
+                // left the slot un-claimed and taps stopped reaching SmartEars.
+                for await sessionEvent in AudioSessionController.shared.events() {
+                    if case .shouldRebuild = sessionEvent {
+                        env.refreshActivationArming(foreground: scenePhase == .active)
+                    }
+                }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                env.refreshActivationArming(foreground: phase == .active)
             }
             .sheet(isPresented: $showOnboarding) {
                 OnboardingView()
@@ -229,8 +274,13 @@ struct RootView: View {
     private func startVoiceTurn() {
         guard !isProcessing else { return }
         isProcessing = true
+        followUpTimeout?.cancel()
+        // Tell the activation service a turn is live: its tap handlers now emit
+        // .interrupt (double-tap) rather than a second .activate, and release()
+        // won't tear the session out from under the in-flight turn.
+        env.activation.turnDidStart()
 
-        Task { @MainActor in
+        turnTask = Task { @MainActor in
             // listening: chime, then consume the live transcription stream.
             env.voiceState = .listening
             env.liveTranscript = ""
@@ -239,10 +289,13 @@ struct RootView: View {
             var finalText = ""
             do {
                 for try await transcription in env.speechRecognizer.transcribe() {
+                    if Task.isCancelled { return }   // barge-in: drop a stale turn
                     env.liveTranscript = transcription.text
                     if !transcription.text.isEmpty { finalText = transcription.text }
                 }
             } catch {
+                // A cancelled turn (AirPod double-tap barge-in) already reset state.
+                if Task.isCancelled { return }
                 // Surface the failure (commonly a permission error) and bail out.
                 let detail = (error as? SmartEarsError)?.errorDescription
                     ?? error.localizedDescription
@@ -254,9 +307,12 @@ struct RootView: View {
                 await env.speechSynthesizer.speak(response.spokenText)
                 env.voiceState = .idle
                 env.liveTranscript = ""
+                env.activation.endTurn()  // re-claim slot + un-duck music
                 isProcessing = false
                 return
             }
+
+            if Task.isCancelled { return }
 
             // Never crash on an empty transcript — speak a graceful fallback.
             let heard = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -266,6 +322,7 @@ struct RootView: View {
                 await env.speechSynthesizer.speak(response.spokenText)
                 env.voiceState = .idle
                 env.liveTranscript = ""
+                env.activation.endTurn()  // re-claim slot + un-duck music
                 isProcessing = false
                 return
             }
@@ -276,16 +333,34 @@ struct RootView: View {
                 ?? .conversational(prompt: heard)
             let response = await env.toolRouter.route(intent)
 
+            if Task.isCancelled { return }
+
             // speaking: surface + speak the response.
             env.voiceState = .speaking
             env.history.insert(response, at: 0)
             env.lastResponse = response
             await env.speechSynthesizer.speak(response.spokenText)
 
-            // settle: hold the mic open briefly when a follow-up is expected.
-            env.voiceState = response.followUpExpected ? .awaitingFollowUp : .idle
+            if Task.isCancelled { return }
+
+            // settle: end the turn (re-claims the slot + un-ducks music) and, when
+            // a follow-up is expected, show "Go on…" but bound it with a timeout so
+            // the state can't hang and leave music ducked. Tapping the orb / an
+            // AirPod single-tap continues the conversation.
             env.liveTranscript = ""
+            env.activation.endTurn()
             isProcessing = false
+            if response.followUpExpected {
+                env.voiceState = .awaitingFollowUp
+                followUpTimeout?.cancel()
+                followUpTimeout = Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(8))
+                    if Task.isCancelled { return }
+                    if env.voiceState == .awaitingFollowUp { env.voiceState = .idle }
+                }
+            } else {
+                env.voiceState = .idle
+            }
         }
     }
 }

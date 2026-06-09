@@ -2,6 +2,16 @@
 //  VoiceSessionManager.swift
 //  SmartEars — Voice layer
 //
+//  ⚠️ NOT WIRED — EXPERIMENTAL / NOT ON THE SHIPPING PATH (as of stabilization).
+//  ------------------------------------------------------------------------
+//  The shipping voice turn lives in `RootView.startVoiceTurn()`, which drives
+//  the `VoiceSessionState` machine directly. This `VoiceSessionManager` (and its
+//  wake-word loop + AirPod gesture pipeline below) is NOT instantiated anywhere
+//  in the app today — `AppEnvironment` does not construct it. It is retained
+//  intentionally: P1 will reuse the barge-in (stop-on-removal), follow-up window,
+//  and capture-failure handling here. Until then, treat anything in this file as
+//  reference, not as behavior the app actually performs.
+//
 //  Orchestrates the always-on voice turn as an `ObservableObject` SwiftUI can
 //  bind to. It drives the `VoiceSessionState` machine (Models.swift):
 //

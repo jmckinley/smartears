@@ -12,25 +12,20 @@
 //     third-party apps. There is no API to read an AirPods Pro squeeze, a long
 //     press, or the press-and-hold-to-switch-mode gesture directly.
 //   * What we CAN observe, and what this service uses:
-//       1. Transport intents via `MPRemoteCommandCenter` — when the user uses an
-//          AirPod stem to play/pause/skip while our audio is the Now Playing
-//          source, iOS routes those as play/pause/next/previous commands. We map
-//          these to `AirPodGesture.singlePress` / `.doublePress` / `.triplePress`.
-//       2. Route / port changes via `AVAudioSession.routeChangeNotification` —
+//       1. Route / port changes via `AVAudioSession.routeChangeNotification` —
 //          tells us when AirPods become the output (bud inserted) or are removed
 //          (old-device-unavailable -> `.earBudRemoved`, the canonical auto-pause
-//          trigger).
-//       3. (Head nod/shake via `CMHeadphoneMotionManager` exists on supported
-//          AirPods but lives in the Gestures module; this service focuses on
-//          transport + route signals and the configurable action mapping.)
-//   * Therefore "AirPod gestures" here are RECONSTRUCTED from these allowed
-//     signals, not read from a private stem-press API. Confidence is 1.0 for
-//     these deterministic transport/route events.
+//          trigger). This is the ONLY real AirPod signal this service emits.
+//       2. (Head nod/shake via `CMHeadphoneMotionManager` exists on supported
+//          AirPods but lives in the Gestures module.)
+//   * We deliberately do NOT map MPRemoteCommandCenter transport commands
+//     (play/pause/next/prev) to "gestures": on real AirPods our app is never the
+//     Now Playing source so they never fire for us, and claiming them would
+//     hijack/pause the user's music. Stem-press wake is reserved by iOS to Siri.
 //
 
 import Foundation
 import AVFoundation
-import MediaPlayer
 
 /// A user-configurable mapping from an AirPod control to a SmartEars action.
 /// Because real stem gestures aren't exposed, the "gesture" is whichever
@@ -63,7 +58,6 @@ public struct AirPodControlMapping: Sendable {
 public final class AirPodInputService: NSObject, GestureService, @unchecked Sendable {
 
     private var mapping: AirPodControlMapping
-    private let commandCenter = MPRemoteCommandCenter.shared()
 
     private var continuation: AsyncStream<GestureEvent>.Continuation?
     private let lock = NSLock()
@@ -117,26 +111,18 @@ public final class AirPodInputService: NSObject, GestureService, @unchecked Send
         }
     }
 
-    // MARK: Transport handlers (MPRemoteCommandCenter)
+    // MARK: Route handlers (AVAudioSession)
 
     private func installHandlers() {
-        // play/pause -> single press toggle
-        commandCenter.togglePlayPauseCommand.isEnabled = true
-        commandCenter.togglePlayPauseCommand.addTarget(self, action: #selector(handleTogglePlayPause))
-        commandCenter.playCommand.isEnabled = true
-        commandCenter.playCommand.addTarget(self, action: #selector(handleTogglePlayPause))
-        commandCenter.pauseCommand.isEnabled = true
-        commandCenter.pauseCommand.addTarget(self, action: #selector(handleTogglePlayPause))
-
-        // next -> double press
-        commandCenter.nextTrackCommand.isEnabled = true
-        commandCenter.nextTrackCommand.addTarget(self, action: #selector(handleNext))
-
-        // previous -> triple press
-        commandCenter.previousTrackCommand.isEnabled = true
-        commandCenter.previousTrackCommand.addTarget(self, action: #selector(handlePrevious))
-
-        // route changes -> bud inserted / removed
+        // iOS does NOT deliver raw AirPods stem-press / squeeze / force-sensor
+        // events to third-party apps, and the press-and-hold-to-wake gesture is
+        // reserved for Siri. We previously claimed MPRemoteCommandCenter
+        // transport commands (play/pause/next/prev) as AirPod "gestures", but:
+        //   * our app is never the Now Playing source, so on real AirPods those
+        //     callbacks never fire for us, and
+        //   * registering them would HIJACK / pause the user's actual music.
+        // So we register NO transport handlers. The only honest, real signal we
+        // can observe is the audio route change (bud inserted / removed).
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleRouteChange(_:)),
@@ -146,11 +132,6 @@ public final class AirPodInputService: NSObject, GestureService, @unchecked Send
     }
 
     private func removeHandlers() {
-        commandCenter.togglePlayPauseCommand.removeTarget(self)
-        commandCenter.playCommand.removeTarget(self)
-        commandCenter.pauseCommand.removeTarget(self)
-        commandCenter.nextTrackCommand.removeTarget(self)
-        commandCenter.previousTrackCommand.removeTarget(self)
         NotificationCenter.default.removeObserver(self, name: AVAudioSession.routeChangeNotification, object: nil)
 
         lock.lock()
@@ -164,21 +145,6 @@ public final class AirPodInputService: NSObject, GestureService, @unchecked Send
         let cont = continuation
         lock.unlock()
         cont?.yield(GestureEvent(gesture: gesture, confidence: confidence))
-    }
-
-    @objc private func handleTogglePlayPause() -> MPRemoteCommandHandlerStatus {
-        emit(.singlePress)
-        return .success
-    }
-
-    @objc private func handleNext() -> MPRemoteCommandHandlerStatus {
-        emit(.doublePress)
-        return .success
-    }
-
-    @objc private func handlePrevious() -> MPRemoteCommandHandlerStatus {
-        emit(.triplePress)
-        return .success
     }
 
     @objc private func handleRouteChange(_ notification: Notification) {

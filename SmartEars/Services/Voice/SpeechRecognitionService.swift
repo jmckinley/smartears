@@ -110,6 +110,9 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
     /// Whether a recognition session is currently active. Guards against the
     /// continuation being finished or torn down more than once.
     private var sessionActive = false
+    /// Watches the AudioSessionController for an interruption so we can fail-fast
+    /// this utterance (call/Siri/alarm) instead of wedging the for-await loop.
+    private var interruptionTask: Task<Void, Never>?
 
     public init(
         locale: Locale = Locale(identifier: "en-US"),
@@ -151,14 +154,25 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
         teardown()
         sessionActive = true
 
-        // Configure the shared audio session for measurement-quality capture.
+        // Configure the shared audio session for measurement-quality capture via
+        // the single session owner (drops the contradictory/moot options).
         do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.duckOthers, .allowBluetoothHFP, .allowBluetoothA2DP, .defaultToSpeaker])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            try await AudioSessionController.shared.configureForCapture()
         } catch {
             finish(continuation: continuation, error: SmartEarsError.other("Audio session setup failed: \(error.localizedDescription)"))
             return
+        }
+
+        // Fail-fast this utterance if the OS interrupts us (call/Siri/alarm).
+        // Without this the for-await loop in RootView wedges forever.
+        interruptionTask = Task { [weak self] in
+            guard let self else { return }
+            for await event in await AudioSessionController.shared.events() {
+                if case .interruptionBegan = event {
+                    await self.finish(continuation: continuation, error: SmartEarsError.other("Audio interrupted."))
+                    return
+                }
+            }
         }
 
         let request = SFSpeechAudioBufferRecognitionRequest()
@@ -197,8 +211,19 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
 
         // Install the input tap and start the engine.
         let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+        let hwFormat = inputNode.outputFormat(forBus: 0)
+        let tapFormat: AVAudioFormat
+        if hwFormat.channelCount > 0, hwFormat.sampleRate > 0 {
+            tapFormat = hwFormat
+        } else if let fallback = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1) {
+            // HFP route in flux reported an invalid format; use a safe 16k mono
+            // PCM format so installTap doesn't trap. SFSpeech accepts this.
+            tapFormat = fallback
+        } else {
+            finish(continuation: continuation, error: SmartEarsError.other("No valid input format available."))
+            return
+        }
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: tapFormat) { buffer, _ in
             request.append(buffer)
         }
         audioEngine.prepare()
@@ -274,6 +299,8 @@ public actor LiveSpeechRecognitionService: SpeechRecognizing {
         request = nil
         task?.cancel()
         task = nil
+        interruptionTask?.cancel()
+        interruptionTask = nil
         // Leave the audio session active so TTS can use it immediately; the
         // session manager owns activation/deactivation policy.
     }

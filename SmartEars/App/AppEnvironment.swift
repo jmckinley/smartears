@@ -27,6 +27,13 @@ public final class AppEnvironment: ObservableObject {
     /// Secure persistence for user-entered API keys (real Keychain by default).
     public let credentialStore: any CredentialStoring
 
+    /// Non-secret persistence for user preferences + UI state (UserDefaults).
+    public let settingsStore: any SettingsStoring
+
+    /// True once init has finished loading persisted state; gates didSet saves so
+    /// hydration assignments don't immediately re-save (and never save partial state).
+    private var isHydrated = false
+
     // MARK: Service protocol surface (defaults to stubs/mocks)
     public let llm: any LLMService
     public let weather: any WeatherService
@@ -40,26 +47,43 @@ public final class AppEnvironment: ObservableObject {
     public let speechSynthesizer: any SpeechSynthesizing
     public let wakeWord: any WakeWordEngine
     public let gestures: any GestureService
+    /// Native AirPod tap-activation engine: claims the iOS now-playing slot while
+    /// armed so a single-tap goes straight to listening (NO wake word) and a
+    /// double-tap interrupts. The canonical tap source; `gestures` remains only
+    /// for earBud route signals (auto-pause).
+    public let activation: NowPlayingActivationService
     public let chime: any ChimeService
     public let toolRouter: any ToolRouting
 
     // MARK: Lightweight observable app state for the minimal UI surface.
     @Published public var voiceState: VoiceSessionState = .idle
     @Published public var history: [AssistantResponse] = []
-    @Published public var triggerConfig: TriggerConfig = .default
+    @Published public var triggerConfig: TriggerConfig = .default { didSet { persistState() } }
 
     /// Live (partial) transcript shown while listening. Cleared between turns.
     @Published public var liveTranscript: String = ""
     /// The most recent assistant response (mirror of `history.first`) for glance.
     @Published public var lastResponse: AssistantResponse?
     /// Recent surfaced alerts (chime + spoken summary). Newest first.
-    @Published public var alerts: [AlertItem] = AppEnvironment.sampleAlerts
+    @Published public var alerts: [AlertItem] = [] { didSet { persistState() } }
     /// Master toggle for the smart-alerting engine.
-    @Published public var smartAlertingEnabled: Bool = true
+    @Published public var smartAlertingEnabled: Bool = true { didSet { persistState() } }
+    /// Whether AirPod tap-to-talk is enabled (default on). When on, SmartEars
+    /// claims the now-playing slot while foregrounded with AirPods connected, so
+    /// an AirPod tap talks to SmartEars instead of controlling music — the
+    /// documented tradeoff. Turning it off falls back to the on-screen orb.
+    @Published public var airPodTapControlEnabled: Bool = true {
+        didSet {
+            persistState()
+            refreshActivationArming(foreground: true)
+        }
+    }
     /// Which information sources the user has enabled (Settings -> Sources).
-    @Published public var enabledInfoSources: Set<InfoSource> = Set(InfoSource.allCases)
+    @Published public var enabledInfoSources: Set<InfoSource> = Set(InfoSource.allCases) { didSet { persistState() } }
     /// Whether the user has completed onboarding (drives presentation in RootView).
-    @Published public var hasCompletedOnboarding: Bool = false
+    @Published public var hasCompletedOnboarding: Bool = false { didSet { persistState() } }
+    /// User's wake phrase. Single source of truth (also pushed to the WakeWordEngine).
+    @Published public var wakePhrase: String = AppEnvironment.defaultWakePhrase { didSet { persistState() } }
 
     /// Info sources the user can toggle on/off in Settings. These mirror the
     /// service protocol surface (weather/stocks/news/email) plus inbound messages.
@@ -86,7 +110,9 @@ public final class AppEnvironment: ObservableObject {
         }
     }
 
-    /// Sample alerts so the Alerts surface is populated on the mock build.
+    /// Illustrative SIMULATED alerts shown ONLY on the mock build (no real
+    /// credentials) so the Alerts surface isn't blank in demos. Never shown on a
+    /// real/credentialed build — see `init` gating on `isUsingMockServices`.
     static let sampleAlerts: [AlertItem] = [
         AlertItem(
             category: .message,
@@ -107,6 +133,7 @@ public final class AppEnvironment: ObservableObject {
     public init(
         config: AppConfig? = nil,
         credentialStore: (any CredentialStoring)? = nil,
+        settingsStore: (any SettingsStoring)? = nil,
         llm: (any LLMService)? = nil,
         weather: (any WeatherService)? = nil,
         stocks: (any StockService)? = nil,
@@ -126,6 +153,11 @@ public final class AppEnvironment: ObservableObject {
         // over the Info.plist-derived config so persisted user keys win.
         let store = credentialStore ?? KeychainCredentialStore()
         self.credentialStore = store
+        // Resolve the settings store and load the persisted snapshot BEFORE
+        // building services: the wake-word detector needs the persisted phrase.
+        let settings = settingsStore ?? SettingsStore()
+        self.settingsStore = settings
+        let persisted = settings.load()
         let base = config ?? .load()
         self.config = AppConfig(
             llmAPIKey: store.value(for: "SE_LLM_API_KEY") ?? base.llmAPIKey,
@@ -194,9 +226,13 @@ public final class AppEnvironment: ObservableObject {
         self.speechSynthesizer = speechSynthesizer ?? LiveTextToSpeechService()
         self.wakeWord = wakeWord ?? WakeWordDetector(
             recognizer: recognizer,
-            triggerPhrase: AppEnvironment.defaultWakePhrase
+            triggerPhrase: persisted.wakePhrase
         )
         self.gestures = gestures ?? AirPodInputService()
+        // The canonical AirPod tap source: claims the now-playing slot through the
+        // shared AudioSessionController (no second session owner). MainActor
+        // construction is correct since AppEnvironment is already @MainActor.
+        self.activation = NowPlayingActivationService(session: .shared)
         self.chime = chime ?? LiveChimeService()
 
         // The default router depends on the resolved info/comms services above.
@@ -210,6 +246,29 @@ public final class AppEnvironment: ObservableObject {
             email: realEmail,
             contacts: realContacts
         )
+
+        // Apply persisted state. didSet does fire for these in-init assignments, so
+        // we keep isHydrated == false here to suppress the save, then flip it on.
+        self.hasCompletedOnboarding = persisted.hasCompletedOnboarding
+        self.triggerConfig = persisted.triggerConfig
+        self.enabledInfoSources = persisted.enabledInfoSources
+        self.smartAlertingEnabled = persisted.smartAlertingEnabled
+        self.airPodTapControlEnabled = persisted.airPodTapControlEnabled
+        self.wakePhrase = persisted.wakePhrase
+
+        // Only seed illustrative sample alerts on a pure mock build (no real
+        // credentials). A credentialed/real build starts empty and shows the
+        // genuine 'No recent alerts' empty state in AlertsView. Re-apply
+        // acknowledged flags onto the (mock-seeded) list by persisted ID.
+        if isUsingMockServices {
+            self.alerts = AppEnvironment.sampleAlerts.map { item in
+                var copy = item
+                copy.acknowledged = persisted.acknowledgedAlertIDs.contains(item.id) || item.acknowledged
+                return copy
+            }
+        }
+
+        isHydrated = true
     }
 
     /// Builds the real `SystemMessagingService`, wiring its `present` closure to
@@ -227,7 +286,27 @@ public final class AppEnvironment: ObservableObject {
     }
 
     /// Default wake phrase used to initialize the live wake-word detector.
-    static let defaultWakePhrase = "Hey SmartEars"
+    public nonisolated static let defaultWakePhrase = "Hey SmartEars"
+
+    /// Re-evaluate AirPod tap-activation arming from the current scene phase and
+    /// user setting. Called by the app scene on phase change and by the audio
+    /// route observer. Honestly claims the now-playing slot (taking taps from the
+    /// user's music) only while armed.
+    public func refreshActivationArming(foreground: Bool) {
+        activation.updateArming(
+            foreground: foreground,
+            tapControlEnabled: airPodTapControlEnabled
+        )
+    }
+
+    /// Updates the wake phrase everywhere: trims, ignores empties, pushes to the
+    /// engine, and persists (via the wakePhrase didSet).
+    public func updateWakePhrase(_ phrase: String) {
+        let trimmed = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        wakeWord.setWakePhrase(trimmed)
+        wakePhrase = trimmed   // didSet -> persistState()
+    }
 
     /// Builds the real weather service (WeatherKit on supported SDKs, with a live
     /// CoreLocation provider). Falls back to the WeatherKit service's own throwing
@@ -309,5 +388,25 @@ public final class AppEnvironment: ObservableObject {
             pendingCredentials[slot] = false
         }
     }
+
+    /// Snapshots the current non-secret state and persists it. Called from the
+    /// @Published didSet observers; no-ops until init has finished hydrating.
+    func persistState() {
+        guard isHydrated else { return }
+        let acknowledged = Set(alerts.filter { $0.acknowledged }.map { $0.id })
+        let snapshot = PersistedAppState(
+            hasCompletedOnboarding: hasCompletedOnboarding,
+            triggerConfig: triggerConfig,
+            enabledInfoSources: enabledInfoSources,
+            smartAlertingEnabled: smartAlertingEnabled,
+            airPodTapControlEnabled: airPodTapControlEnabled,
+            wakePhrase: wakePhrase,
+            acknowledgedAlertIDs: acknowledged
+        )
+        settingsStore.save(snapshot)
+    }
+
+    /// Explicit save for callers that prefer to drive persistence imperatively.
+    public func save() { persistState() }
 }
 

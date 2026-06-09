@@ -73,13 +73,17 @@ public final class LiveTextToSpeechService: NSObject, SpeechSynthesizing {
         // If something is already speaking, barge-in over it first.
         await stop()
 
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        let spoken = SpokenTextNormalizer.normalize(text)
+        guard !spoken.isEmpty else { return }
+
+        // Switch the shared session to wideband spokenAudio playback so the
+        // reply routes through A2DP to AirPods instead of narrowband HFP.
+        try? AudioSessionController.shared.configureForPlayback()
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             self.completion = continuation
 
-            let utterance = AVSpeechUtterance(string: trimmed)
+            let utterance = AVSpeechUtterance(string: spoken)
             utterance.voice = AVSpeechSynthesisVoice(language: config.languageCode)
             utterance.rate = config.rate
             utterance.pitchMultiplier = config.pitchMultiplier
@@ -142,8 +146,9 @@ public actor StubTextToSpeechService: SpeechSynthesizing {
 
     public func speak(_ text: String) async {
         await stop()
-        spokenLog.append(text)
-        let wordCount = max(1, text.split(separator: " ").count)
+        let spoken = SpokenTextNormalizer.normalize(text)
+        spokenLog.append(spoken)
+        let wordCount = max(1, spoken.split(separator: " ").count)
         let seconds = Double(wordCount) / (wordsPerMinute / 60.0)
         let task = Task<Void, Never> { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
         speakTask = task

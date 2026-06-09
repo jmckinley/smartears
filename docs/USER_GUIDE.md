@@ -16,20 +16,27 @@ No screen-staring required.
      you. (If you tap *Don't Allow* by accident, the app sends you to *Settings*
      to switch them back on.)
    - **Notifications** — optional; only needed for smart alerts.
-   - **Pick your wake word** — the phrase that starts a hands-free request. Default
-     is **"Hey SmartEars"**; you can choose a suggestion or type your own.
+
+Once onboarding is done you can talk to SmartEars right away — just **tap the orb**.
+Your choices are remembered, so you won't see onboarding again on the next launch.
 
 ---
 
 ## 2. Talking to SmartEars
 
-There are two ways to start a request:
-
-- **Tap the orb** on the main screen, then speak.
-- **Say your wake word** (e.g. *"Hey SmartEars…"*) and then your request.
+**Tap the orb** on the main screen, then speak. That's the one reliable way to
+start a request today, and it works the moment your AirPods are connected.
 
 The orb shows what's happening: **calm** = idle, **pulsing** = listening,
 **spinning** = thinking, **glowing** = speaking back to you.
+
+> **What about a "Hey SmartEars" wake word?** True always-listening wake words are
+> reserved by iOS for Siri — no third-party app can run one in the background. A
+> hands-free trigger (and AirPod head-gesture confirmation) is on our roadmap as an
+> explicit, opt-in feature; until it ships reliably we'd rather not promise it. For
+> now, tap-to-talk is the honest, dependable entry point. You can also **single-tap
+> an AirPod** to start a request hands-free while SmartEars is open (see AirPod
+> controls).
 
 ### Things to try
 
@@ -64,10 +71,14 @@ incoming messages and emails — so you stay hands-free and heads-up.
 
 ## 4. AirPod controls
 
-- **In-ear detection** — SmartEars knows when your AirPods are in.
-- **Press / gesture** — mapped to start a request or confirm an action. Configure
-  the mapping in **Settings → Controls**.
-- A quick **"yes"/"no"** by voice works anywhere a confirmation is needed.
+When SmartEars is open and your AirPods are connected, you can start a request **without touching your phone**:
+
+- **Single-tap** an AirPod (press the stem once) to start talking — SmartEars plays a quick earcon, opens the mic, and starts listening immediately. No wake word needed.
+- **Double-tap** while SmartEars is answering to **interrupt** it (barge-in) and stop the reply.
+
+> **Heads up — this takes over your AirPod taps.** To catch a tap the instant you make it, SmartEars has to become your iPhone's "now playing" app while it's open. That means **while SmartEars is in the foreground, an AirPod tap talks to SmartEars instead of play/pausing or skipping your music.** The moment you switch away from SmartEars, your taps go back to controlling music as usual. We don't lower or pause your music just for listening — only an actual request ducks it briefly. Prefer to keep your taps on music? Turn off **Settings → AirPod tap to talk** and use the on-screen orb instead.
+
+> **A note on what iOS allows:** Apple doesn't expose raw AirPod stem-press or squeeze events to apps; the only way to hear a tap is to be the now-playing app and receive it as a media control. That's exactly what SmartEars does while it's open.
 
 ---
 
@@ -75,10 +86,12 @@ incoming messages and emails — so you stay hands-free and heads-up.
 
 - **API Keys** — paste keys to enable live data and AI (see below). Keys are stored
   in the iOS **Keychain** on your device only — never uploaded, never in iCloud.
-- **Wake Word** — change your trigger phrase any time.
 - **Alerts** — toggle smart alerting and manage your VIP senders.
 - **Sources** — turn individual sources (Weather, Stocks, News, Email, Messages)
   on or off.
+
+Your settings are saved on your device and restored automatically next time you
+open the app.
 
 ### Enabling live data & AI
 
@@ -113,8 +126,8 @@ stocks, and news need no setup. Keys live only in your device Keychain.
 
 | Problem | Fix |
 |---|---|
-| It doesn't hear me | Settings (iOS) → SmartEars → enable **Microphone** + **Speech Recognition** |
-| Wake word never triggers | Open the app, re-pick your wake word; keep AirPods in |
+| It doesn't hear me | Settings (iOS) → SmartEars → enable **Microphone** + **Speech Recognition**; keep AirPods in and tap the orb before speaking |
+| A phone call left it stuck | SmartEars now recovers automatically after calls and Siri; if it still seems stuck, tap the orb again |
 | "Needs setup" on a request | Add that feature's API key in **Settings → API Keys** |
 | No weather | Enable **Location** for SmartEars; weather needs WeatherKit enabled on the build |
 | No alerts | Settings → Alerts → turn on smart alerting and allow Notifications |

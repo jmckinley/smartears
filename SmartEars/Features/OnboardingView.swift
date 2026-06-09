@@ -27,7 +27,7 @@ struct OnboardingView: View {
     enum PermState { case notDetermined, granted, denied }
 
     @State private var page = 0
-    @State private var wakePhrase = "Hey SmartEars"
+    @State private var wakePhrase = ""
     @State private var micState: PermState = .notDetermined
     @State private var speechState: PermState = .notDetermined
     @State private var notificationsState: PermState = .notDetermined
@@ -56,6 +56,7 @@ struct OnboardingView: View {
         }
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled()
+        .onAppear { if wakePhrase.isEmpty { wakePhrase = env.wakePhrase } }
     }
 
     // MARK: Page 1 — concept
@@ -69,7 +70,7 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: SETheme.Spacing.medium) {
                 FeatureRow(symbol: "waveform", text: "Ask out loud — weather, stocks, news, and more.")
                 FeatureRow(symbol: "bell.badge", text: "Hear a chime and a spoken summary for important messages.")
-                FeatureRow(symbol: "hand.tap", text: "Use AirPod gestures and a head nod or shake to confirm.")
+                FeatureRow(symbol: "hand.tap", text: "Tap to talk. Hands-free wake word is coming soon.")
                 FeatureRow(symbol: "lock.shield", text: "Runs on private, on-device speech. No keys required to start.")
             }
             .padding(.top, SETheme.Spacing.large)
@@ -132,7 +133,7 @@ struct OnboardingView: View {
         OnboardingPage(
             symbol: "waveform.badge.mic",
             title: "Pick a wake word",
-            subtitle: "Say it to start a hands-free turn without tapping."
+            subtitle: "Today you tap to talk. Hands-free wake word is coming soon — we'll use this phrase when it ships."
         ) {
             VStack(spacing: SETheme.Spacing.medium) {
                 TextField("Wake phrase", text: $wakePhrase)
@@ -148,7 +149,7 @@ struct OnboardingView: View {
                     wakePhrase = phrase
                 }
 
-                Text("iOS limits fully-custom on-device keyword models; SmartEars matches your phrase with on-device speech recognition.")
+                Text("iOS limits fully-custom always-on keyword models for third-party apps. For now SmartEars is tap-to-talk; when the wake word ships it'll match this phrase on-device.")
                     .font(SETheme.Typography.caption)
                     .foregroundStyle(SETheme.Colors.textSecondary)
                     .multilineTextAlignment(.center)
@@ -186,9 +187,8 @@ struct OnboardingView: View {
     }
 
     private func finish() {
-        let trimmed = wakePhrase.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { env.wakeWord.setWakePhrase(trimmed) }
-        env.hasCompletedOnboarding = true
+        env.updateWakePhrase(wakePhrase)   // trims, ignores empty, sets engine + persists
+        env.hasCompletedOnboarding = true   // didSet -> persistState(); gates re-onboarding
         dismiss()
     }
 
